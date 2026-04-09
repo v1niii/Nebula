@@ -9,7 +9,7 @@ A fast, secure Valorant account manager. Switch between accounts with one click.
 - **One-click account switching** — Launch Valorant logged into any saved account
 - **Secure login** — Authenticate via Riot's official login page (webview), no credentials stored
 - **Session management** — Cookies encrypted with OS-level encryption (safeStorage/DPAPI)
-- **Import accounts** — Import from a running Riot Client (lockfile + YAML)
+- **Import accounts** — Import from a running Riot Client
 - **Session health check** — Verify if a session is still valid
 - **Copy game settings** — Transfer crosshair, keybinds, and video settings between accounts
 - **Nicknames & reorder** — Label accounts and drag to reorder
