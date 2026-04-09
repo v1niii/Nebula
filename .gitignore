@@ -1,5 +1,9 @@
 # Dependencies
 /node_modules
+/renderer/node_modules
+
+# Renderer build output
+/renderer/dist
 
 # Build artifacts
 /dist

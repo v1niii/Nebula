@@ -1,84 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- CSP Policy -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
-    <title>Valorant Account Manager</title>
-    <link rel="stylesheet" href="css/styles.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com;">
+  <title>Nebula</title>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>Valorant Account Manager</h1>
-            <div class="header-actions">
-                 <button id="import-account-btn" title="Import Logged-In Account">Import Current</button>
-                <button id="settings-btn" title="Settings">⚙️</button>
-            </div>
-        </header>
-
-        <main>
-            <section id="account-list-section">
-                <h2>Accounts</h2>
-                <ul id="account-list">
-                    <!-- Account items will be populated here -->
-                    <li class="loading-placeholder">Loading accounts...</li>
-                </ul>
-            </section>
-
-            <section id="add-account-section">
-                <h2>Add New Account</h2>
-                <form id="add-account-form">
-                    <div class="form-group">
-                        <label for="username">Riot Username:</label>
-                        <input type="text" id="username" name="username" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="password">Password:</label>
-                        <input type="password" id="password" name="password" required>
-                    </div>
-                     <p class="auth-warning">Note: This uses placeholder auth. Replace with real Riot login for production.</p>
-                    <button type="submit" id="add-account-submit-btn">Add Account</button>
-                    <p id="add-account-status" class="status-message"></p>
-                </form>
-            </section>
-        </main>
-
-        <footer>
-            <p>Status: <span id="app-status">Idle</span></p>
-             <p><a href="#" id="discord-link">Need Help? Join Discord</a></p>
-        </footer>
-    </div>
-
-    <!-- Settings Modal -->
-    <div id="settings-modal" class="modal">
-        <div class="modal-content">
-            <span class="close-btn" id="close-settings-btn">&times;</span>
-            <h2>Settings</h2>
-            <form id="settings-form">
-                <div class="form-group">
-                    <label for="valorant-path">Riot Games Install Directory:</label>
-                    <div class="path-select">
-                         <input type="text" id="valorant-path" name="valorantPath" readonly>
-                         <button type="button" id="select-path-btn">Browse...</button>
-                    </div>
-                     <small>Select the main folder where Riot Games is installed (e.g., C:\Riot Games).</small>
-                </div>
-                 <div class="form-group">
-                    <label for="theme-select">Theme:</label>
-                    <select id="theme-select" name="theme">
-                        <option value="system">System Default</option>
-                        <option value="light">Light</option>
-                        <option value="dark">Dark</option>
-                    </select>
-                </div>
-                <button type="submit">Save Settings</button>
-                 <p id="settings-status" class="status-message"></p>
-            </form>
-        </div>
-    </div>
-
-    <script src="js/app.js"></script>
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
 </body>
 </html>

@@ -1,10 +1,10 @@
 const fs = require('fs').promises;
 const path = require('path');
 const yaml = require('yaml');
+const fetch = require('node-fetch');
+const https = require('https');
 const { exec, spawn } = require('child_process');
 const os = require('os');
-const { AuthService } = require('./auth-service');
-
 // Constants for Riot Client paths and configuration files
 const RIOT_CLIENT_INSTALLS_PATH = path.join(process.env.ProgramData, 'Riot Games', 'RiotClientInstalls.json');
 const RIOT_CLIENT_DATA_PATH_BASE = path.join(process.env.LOCALAPPDATA, 'Riot Games');
@@ -14,16 +14,17 @@ const RIOT_CLIENT_DATA_FOLDER = 'Riot Client/Data';
 const RIOT_CLIENT_CONFIG_FOLDER = 'Riot Client/Config';
 const RIOT_CLIENT_BETA_DATA_FOLDER = 'Beta/Data';
 const RIOT_CLIENT_BETA_CONFIG_FOLDER = 'Beta/Config';
+const RIOT_CLIENT_LOCKFILE = 'Riot Client/Config/lockfile';
+const RIOT_CLIENT_BETA_LOCKFILE = 'Beta/Config/lockfile';
 
 class AuthLaunchService {
-    constructor(store) {
+    constructor(store, authService) {
         this.store = store;
-        // Requires AuthService to add imported accounts back to storage
-        this.authService = new AuthService(store);
+        this.authService = authService;
     }
 
     // Finds the Riot Client executable path by reading RiotClientInstalls.json
-    async getRiotClientPath(basePath = null) {
+    async getRiotClientPath() {
         if (!os.platform().startsWith('win')) {
             throw new Error('Automatic Riot Client detection is only supported on Windows.');
         }
@@ -130,9 +131,110 @@ class AuthLaunchService {
         }
     }
 
-    // Imports account details by reading the current Riot Client session files
+    // Reads the Riot Client lockfile to get the local API port and password
+    async readLockfile() {
+        const betaPath = path.join(RIOT_CLIENT_DATA_PATH_BASE, RIOT_CLIENT_BETA_LOCKFILE);
+        const defaultPath = path.join(RIOT_CLIENT_DATA_PATH_BASE, RIOT_CLIENT_LOCKFILE);
+
+        for (const lockfilePath of [betaPath, defaultPath]) {
+            try {
+                const content = await fs.readFile(lockfilePath, 'utf-8');
+                const parts = content.split(':');
+                if (parts.length >= 4) {
+                    return { port: parts[2], password: parts[3] };
+                }
+            } catch {
+                // Try next path
+            }
+        }
+        return null;
+    }
+
+    // Gets auth tokens directly from the running Riot Client's local API
+    async authenticateViaLockfile() {
+        const lockfile = await this.readLockfile();
+        if (!lockfile) {
+            return null;
+        }
+
+        try {
+            const agent = new https.Agent({ rejectUnauthorized: false });
+            const credentials = Buffer.from(`riot:${lockfile.password}`).toString('base64');
+            const response = await fetch(`https://127.0.0.1:${lockfile.port}/riot-client-auth/v1/authorization`, {
+                method: 'GET',
+                agent,
+                headers: {
+                    'Authorization': `Basic ${credentials}`,
+                    'Content-Type': 'application/json',
+                }
+            });
+
+            if (!response.ok) {
+                console.log(`Lockfile auth returned ${response.status}`);
+                return null;
+            }
+
+            const data = await response.json();
+            if (data.accessToken && data.subject) {
+                console.log('Successfully authenticated via Riot Client lockfile');
+                return {
+                    accessToken: data.accessToken,
+                    idToken: data.idToken || '',
+                    puuid: data.subject,
+                };
+            }
+            return null;
+        } catch (error) {
+            console.log('Lockfile auth failed:', error.message);
+            return null;
+        }
+    }
+
+    // Imports account details - tries lockfile first, then falls back to YAML
     async importCurrentAccount() {
         console.log('Attempting to import current Riot account session...');
+
+        // Method 1: Try lockfile auth (fastest, works if Riot Client is running)
+        const lockfileAuth = await this.authenticateViaLockfile();
+        if (lockfileAuth) {
+            try {
+                // We have tokens directly, use them to get user info and save
+                const result = await this.authService.addAccountFromTokens(
+                    lockfileAuth.accessToken,
+                    lockfileAuth.idToken,
+                    {} // No browser cookies from this method
+                );
+
+                if (result.success) {
+                    // Now try to also get cookies from YAML for future re-auth/launch
+                    try {
+                        const { dataPath } = await this.findCurrentRiotDataPaths();
+                        const privateSettings = await this.readPrivateSettings(dataPath);
+                        if (privateSettings) {
+                            const cookies = this.extractCookiesFromYaml(privateSettings);
+                            if (cookies && cookies.ssid) {
+                                await this.authService.storeCookiesSecurely(result.account.id, {
+                                    ssid: cookies.ssid,
+                                    clid: cookies.clid || '',
+                                    csid: cookies.csid || '',
+                                    tdid: cookies.tdid || '',
+                                    sub: result.account.id,
+                                });
+                                console.log('Stored session data for lockfile-imported account');
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('Could not read YAML cookies for lockfile import:', e.message);
+                    }
+                    return result.account;
+                }
+            } catch (error) {
+                console.warn('Lockfile auth succeeded but account save failed:', error.message);
+            }
+        }
+
+        // Method 2: Fall back to reading YAML cookies directly
+        console.log('Lockfile auth unavailable, trying YAML file import...');
         try {
             const { dataPath } = await this.findCurrentRiotDataPaths();
             const privateSettings = await this.readPrivateSettings(dataPath);
@@ -147,22 +249,51 @@ class AuthLaunchService {
                 throw new Error('Could not extract necessary cookies (ssid, sub) from Riot settings.');
             }
 
-            // TODO: Enhance by fetching actual username/region via API using extracted tokens/cookies if possible
             const accountData = {
-                id: cookies.sub, // PUUID from 'sub' cookie is the account ID
-                username: `Imported (${cookies.sub.substring(0, 5)})`, // Generate a placeholder username
-                region: 'NA', // Placeholder region, ideally detect this too
+                id: cookies.sub,
+                username: `Imported (${cookies.sub.substring(0, 5)})`,
+                region: 'NA',
                 cookies: cookies
             };
 
             const addedAccount = await this.authService.addImportedAccount(accountData);
-            console.log('Successfully imported account:', addedAccount?.id);
+            console.log('Successfully imported account via YAML:', addedAccount?.id);
             return addedAccount;
 
         } catch (error) {
             console.error('Failed to import current account:', error);
-            throw error; // Propagate error to the main process handler
+            throw new Error('Could not import account. Make sure the Riot Client is running and you are logged in.');
         }
+    }
+
+    // Copies Valorant in-game settings (crosshair, keybinds, video) from one account to another
+    async copyGameSettings(fromPuuid, toPuuid) {
+        const valorantConfigBase = path.join(process.env.LOCALAPPDATA, 'VALORANT', 'Saved', 'Config');
+        const sourceDir = path.join(valorantConfigBase, fromPuuid, 'Windows');
+        const targetDir = path.join(valorantConfigBase, toPuuid, 'Windows');
+
+        try {
+            await fs.access(sourceDir);
+        } catch {
+            throw new Error('Source account settings not found. Launch Valorant with that account at least once.');
+        }
+
+        await fs.mkdir(targetDir, { recursive: true });
+
+        const files = await fs.readdir(sourceDir);
+        const settingsFiles = files.filter(f => f.endsWith('.ini'));
+
+        if (settingsFiles.length === 0) {
+            throw new Error('No settings files found for the source account.');
+        }
+
+        let copied = 0;
+        for (const file of settingsFiles) {
+            await fs.copyFile(path.join(sourceDir, file), path.join(targetDir, file));
+            copied++;
+        }
+
+        return { copied, files: settingsFiles };
     }
 
     // Generates the YAML content for RiotGamesPrivateSettings.yaml using provided cookies
@@ -192,7 +323,7 @@ class AuthLaunchService {
     }
 
     // Generates the YAML content for RiotClientSettings.yaml
-    createClientSettingsYaml(region = 'NA', locale = 'en_US') {
+    createClientSettingsYaml(region = 'NA') {
          const yamlStructure = {
             install: {
                 globals: {
@@ -218,7 +349,7 @@ class AuthLaunchService {
         try {
             if (platform === 'win32') {
                 const command = `taskkill /F ${processesToKill.map(p => `/IM ${p}`).join(' ')} /T`;
-                await new Promise((resolve, reject) => {
+                await new Promise((resolve) => {
                     exec(command, (error, stdout, stderr) => {
                         // taskkill exits with error if process not found, ignore those specific errors
                         if (error && !stderr.includes('ERROR: The process') && !stderr.includes('not found')) {
@@ -231,7 +362,7 @@ class AuthLaunchService {
                 });
             } else if (platform === 'darwin') { // macOS
                 const command = `pkill -f ${processesToKill.join('|')}`; // Adjust command for macOS if needed
-                 await new Promise((resolve, reject) => {
+                 await new Promise((resolve) => {
                     exec(command, (error, stdout, stderr) => {
                         if (error && error.code !== 1) { // pkill exits 1 if no process found, ignore that
                              console.warn(`pkill error (ignoring 'not found'): ${stderr || error.message}`);
@@ -295,7 +426,7 @@ class AuthLaunchService {
 
 
     // Main function to launch Valorant for a specific account
-    async launchValorant(account, cookies) { // Expect cookies to be passed in
+    async launchValorant(account, cookies, autoLaunchValorant = true) {
         if (!account || !account.id) {
             throw new Error('Invalid account metadata provided for launch.');
         }
@@ -303,7 +434,7 @@ class AuthLaunchService {
             throw new Error('Invalid or missing cookies provided for launch.');
         }
 
-        console.log(`Attempting launch for account: ${account.username || account.id}`);
+        console.log(`Attempting launch for account: ${account.id.substring(0, 8)}...`);
 
         // Step 1: Close existing Riot/Valorant processes
         await this.closeRiotProcesses();
@@ -320,12 +451,12 @@ class AuthLaunchService {
             // Create and write RiotGamesPrivateSettings.yaml (contains auth cookies)
             const privateSettingsContent = this.createPrivateSettingsYaml(cookies);
             await fs.writeFile(path.join(dataPath, RIOT_GAMES_PRIVATE_SETTINGS), privateSettingsContent, 'utf-8');
-            console.log(`Wrote ${RIOT_GAMES_PRIVATE_SETTINGS} for ${account.id}`);
+            console.log('Wrote auth settings file.');
 
             // Create and write RiotClientSettings.yaml (contains region/locale)
             const clientSettingsContent = this.createClientSettingsYaml(account.region);
             await fs.writeFile(path.join(configPath, RIOT_CLIENT_SETTINGS), clientSettingsContent, 'utf-8');
-            console.log(`Wrote ${RIOT_CLIENT_SETTINGS} for ${account.id}`);
+            console.log('Wrote client settings file.');
 
         } catch (error) {
             console.error('Error writing Riot configuration files:', error);
@@ -334,18 +465,30 @@ class AuthLaunchService {
 
         // Step 4: Launch the Riot Client
         try {
-            const args = ['--launch-product=valorant', '--launch-patchline=live']; // Standard args to launch Valorant
-            console.log(`Executing Riot Client: ${riotClientExePath} ${args.join(' ')}`);
+            const args = autoLaunchValorant ? ['--launch-product=valorant', '--launch-patchline=live'] : [];
+            console.log(`Launching Riot Client for account ${account.id.substring(0, 8)}...`);
 
-            // Use spawn to start the Riot Client detached from this application
             const child = spawn(riotClientExePath, args, {
-                detached: true, // Allows Nebula to close without closing Riot Client
-                stdio: 'ignore' // Don't pipe stdio
+                detached: true,
+                stdio: 'ignore'
             });
-            child.unref(); // Further detaches the child process
+            child.unref();
 
             console.log('Riot Client launch initiated.');
-            // The main process watcher will detect when Valorant actually starts
+
+            // Step 5: Overwrite plaintext cookies on disk after Riot Client has read them
+            const yamlPath = path.join(dataPath, RIOT_GAMES_PRIVATE_SETTINGS);
+            setTimeout(async () => {
+                try {
+                    // Overwrite with empty structure instead of deleting
+                    // (delete can fail if file is locked; overwrite zeroes out the secrets)
+                    const emptyYaml = yaml.stringify({ private: { 'riot-login': { persist: { session: { cookies: [] } } } } });
+                    await fs.writeFile(yamlPath, emptyYaml, 'utf-8');
+                    console.log('Scrubbed plaintext auth data from disk.');
+                } catch (e) {
+                    // File may be locked by Riot Client - will be overwritten on next launch
+                }
+            }, 15000);
 
         } catch (error) {
             console.error('Failed to spawn Riot Client process:', error);
@@ -354,10 +497,4 @@ class AuthLaunchService {
     }
 }
 
-// Export class and potentially reusable helper functions
-module.exports = {
-    AuthLaunchService,
-    getRiotClientPath: AuthLaunchService.prototype.getRiotClientPath,
-    closeRiotProcesses: AuthLaunchService.prototype.closeRiotProcesses,
-    isValorantRunning: AuthLaunchService.prototype.isValorantRunning
-};
+module.exports = { AuthLaunchService };

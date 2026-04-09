@@ -6,7 +6,8 @@
   "scripts": {
     "start": "electron .",
     "dev": "cross-env NODE_ENV=development electron .",
-    "build": "electron-builder",
+    "build:renderer": "cd renderer && npm run build",
+    "build": "npm run build:renderer && electron-builder",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
@@ -19,25 +20,31 @@
   "license": "MIT",
   "dependencies": {
     "electron-store": "^8.1.0",
-    "keytar": "^7.9.0",
+    "electron-updater": "^6.8.3",
     "node-fetch": "^2.6.7",
-    "uuid": "^9.0.0",
     "yaml": "^2.3.1"
   },
   "devDependencies": {
     "cross-env": "^7.0.3",
-    "electron": "^25.0.0",
+    "electron": "^28.3.3",
     "electron-builder": "^24.6.3"
   },
   "build": {
     "appId": "com.example.nebula",
     "productName": "Nebula",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "v1niii",
+        "repo": "Nebula"
+      }
+    ],
     "files": [
       "main.js",
       "preload.js",
       "auth-service.js",
       "auth-launch-service.js",
-      "renderer/**/*",
+      "renderer/dist/**/*",
       "assets/**/*",
       "node_modules/**/*"
     ],

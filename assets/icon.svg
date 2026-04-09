@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <!-- Core -->
+  <ellipse cx="256" cy="256" rx="72" ry="48" fill="#7C3AED" opacity="0.9"/>
+  <ellipse cx="256" cy="256" rx="48" ry="32" fill="#6D28D9"/>
+
+  <!-- Ring 1 -->
+  <path d="M256 152c-72 0-134 28-158 68" stroke="#7C3AED" stroke-width="14" stroke-linecap="round" opacity="0.9"/>
+  <path d="M414 236c-24-40-86-68-158-68" stroke="#7C3AED" stroke-width="14" stroke-linecap="round" opacity="0.7"/>
+  <path d="M256 360c72 0 134-28 158-68" stroke="#7C3AED" stroke-width="14" stroke-linecap="round" opacity="0.9"/>
+  <path d="M98 276c24 40 86 68 158 68" stroke="#7C3AED" stroke-width="14" stroke-linecap="round" opacity="0.7"/>
+
+  <!-- Ring 2 -->
+  <path d="M256 108c-96 0-178 38-210 92" stroke="#8B5CF6" stroke-width="12" stroke-linecap="round" opacity="0.7"/>
+  <path d="M466 200c-32-54-114-92-210-92" stroke="#8B5CF6" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
+  <path d="M256 404c96 0 178-38 210-92" stroke="#8B5CF6" stroke-width="12" stroke-linecap="round" opacity="0.7"/>
+  <path d="M46 312c32 54 114 92 210 92" stroke="#8B5CF6" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
+
+  <!-- Ring 3 -->
+  <path d="M256 72c-118 0-220 48-260 116" stroke="#A78BFA" stroke-width="10" stroke-linecap="round" opacity="0.5"/>
+  <path d="M516 188c-40-68-142-116-260-116" stroke="#A78BFA" stroke-width="10" stroke-linecap="round" opacity="0.35"/>
+  <path d="M256 440c118 0 220-48 260-116" stroke="#A78BFA" stroke-width="10" stroke-linecap="round" opacity="0.5"/>
+  <path d="M-4 324c40 68 142 116 260 116" stroke="#A78BFA" stroke-width="10" stroke-linecap="round" opacity="0.35"/>
+</svg>
