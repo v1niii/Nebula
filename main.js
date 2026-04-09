@@ -235,7 +235,14 @@ ipcMain.handle('launch-valorant', async (event, accountId) => {
         const autoLaunch = appStore.get('autoLaunchValorant', true);
         await authLaunchService.launchValorant(account, cookies, autoLaunch);
         await authService.updateLastUsed(accountId);
-        startValorantWatcher(accountId);
+        if (autoLaunch) {
+            startValorantWatcher(accountId);
+        } else {
+            // No Valorant to watch - just mark as closed after Riot Client opens
+            setTimeout(() => {
+                if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'closed');
+            }, 3000);
+        }
         return { success: true };
     } catch (error) {
         if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'error', error.message);

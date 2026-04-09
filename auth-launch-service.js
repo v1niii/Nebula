@@ -328,7 +328,7 @@ class AuthLaunchService {
             install: {
                 globals: {
                     region: region.toUpperCase(), // Region needs to be uppercase
-                    locale: locale,
+                    locale: 'en_US',
                 }
             },
             patchlines: { // Usually needed

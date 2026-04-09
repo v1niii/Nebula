@@ -71,8 +71,8 @@ function AppContent() {
   }, [reorderAccounts])
 
   return (
-    <div className="min-h-screen p-4 sm:p-6 lg:p-8 flex flex-col">
-      <div className="mx-auto w-full max-w-2xl flex-1 flex flex-col animate-fade-in">
+    <div className="min-h-screen p-4 sm:p-6 lg:p-8 flex items-start justify-center">
+      <div className="w-full max-w-2xl flex flex-col animate-fade-in">
         <Header onOpenSettings={() => setSettingsOpen(true)} />
 
         <div className="space-y-4 flex-1">
