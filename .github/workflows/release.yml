@@ -1,65 +1,46 @@
 name: Release Nebula
 
-on: # Top-level key, no indentation
-  push: # Indented under 'on'
-    tags: # Indented under 'push'
-      - 'v*' # Trigger on tags like v1.0.0, v1.1.0-beta
+on:
+  push:
+    tags:
+      - 'v*'
 
-# Permissions needed for the softprops/action-gh-release action to create releases and upload assets
 permissions:
   contents: write
 
-jobs: # Top-level key, no indentation
-      build-and-release:
-        name: Build & Release for ${{ matrix.os }}
-        runs-on: ${{ matrix.os }} # Use runners for different OS
+jobs:
+  build-and-release:
+    name: Build & Release
+    runs-on: windows-latest
 
-        strategy:
-          matrix:
-            os: [windows-latest] # Only build on Windows for now
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v4
 
-        steps:
-          - name: Check out Git repository
-            uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
 
-          - name: Set up Node.js
-            uses: actions/setup-node@v4
-            with:
-              node-version: '20' # Use a specific LTS Node.js version
-              cache: 'npm' # Cache npm dependencies
+      - name: Install root dependencies
+        run: npm ci
 
-          - name: Install dependencies
-            # Use npm ci for cleaner installs based on package-lock.json
-            run: npm ci
+      - name: Install renderer dependencies
+        run: cd renderer && npm ci
 
-          - name: Build application
-            # electron-builder automatically builds for the current OS
-            run: npm run build
-            env:
-              # GitHub token is needed by electron-builder for auto-updates/publishing (optional but good practice)
-              # It's automatically provided by GitHub Actions
-              GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build renderer
+        run: npm run build:renderer
 
-          - name: Determine Artifact Name and Path
-            id: artifacts
-            shell: bash
-            run: |
-              # Find the first installer/package in the dist directory using find and grep
-              # This is more portable than extglob ls
-              ARTIFACT_PATH=$(find dist/ -maxdepth 1 -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.deb" \) | head -n 1)
-              if [ -z "$ARTIFACT_PATH" ]; then
-                echo "Error: No build artifact found in dist/ directory."
-                exit 1
-              fi
-              ARTIFACT_NAME=$(basename "$ARTIFACT_PATH")
-              echo "ARTIFACT_PATH=${ARTIFACT_PATH}" >> $GITHUB_OUTPUT
-              echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
-              echo "Found artifact: ${ARTIFACT_NAME} at ${ARTIFACT_PATH}"
+      - name: Build Electron app
+        run: npx electron-builder --win
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-          - name: Upload Release Asset
-            uses: softprops/action-gh-release@v2 # Creates release and uploads asset
-            if: steps.artifacts.outputs.ARTIFACT_PATH != '' # Only run if artifact was found
-            with:
-              files: ${{ steps.artifacts.outputs.ARTIFACT_PATH }}
-              # GITHUB_TOKEN is implicitly used by the action
-              # The release name and body will be based on the tag
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.exe
+          draft: false
+          prerelease: false
