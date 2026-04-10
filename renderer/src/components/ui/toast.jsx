@@ -66,7 +66,7 @@ export function ToastProvider({ children }) {
   return (
     <ToastContext.Provider value={toast}>
       {children}
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 w-[calc(100%-2rem)] max-w-[440px] pointer-events-none">
+      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 w-[calc(100%-2rem)] max-w-[600px] pointer-events-none">
         {toasts.map(t => (
           <div key={t.id} className="pointer-events-auto">
             <Toast toast={t} onDismiss={dismiss} />

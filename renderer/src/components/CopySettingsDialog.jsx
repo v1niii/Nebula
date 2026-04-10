@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Cloud, Monitor } from 'lucide-react'
+import { Copy, Monitor } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -69,7 +69,7 @@ export function CopySettingsDialog({ open, onOpenChange, targetAccount, accounts
 
           <div className="space-y-2">
             <Button onClick={handleCopyCloud} disabled={copying || !sourceId} className="w-full gap-1.5">
-              <Cloud className="h-3.5 w-3.5" />
+              <Copy className="h-3.5 w-3.5" />
               {copying ? 'Copying...' : 'Copy All Settings'}
             </Button>
             <p className="text-xs text-muted-foreground">

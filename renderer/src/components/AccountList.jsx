@@ -22,7 +22,7 @@ export function AccountList({ accounts, loading, statuses, onLaunch, onRemove, o
 
   return (
     <Card>
-      <CardHeader className="pb-3">
+      <CardHeader>
         <div className="flex items-center gap-2">
           <Users className="h-4 w-4 text-muted-foreground" />
           <CardTitle className="text-sm font-medium">Accounts</CardTitle>

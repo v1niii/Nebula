@@ -44,7 +44,7 @@ export function AddAccountSection({ onLogin, onImport }) {
 
   return (
     <Card>
-      <CardHeader className="pb-3">
+      <CardHeader>
         <CardTitle className="text-sm font-medium">Add Account</CardTitle>
         <CardDescription>Opens the Riot Client to log in, or captures from a running session.</CardDescription>
       </CardHeader>

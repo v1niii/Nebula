@@ -19,10 +19,10 @@ let valorantProcessWatcher = null;
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 500, height: 700,
+        width: 750, height: 700,
         resizable: false,
         maximizable: false,
-        autoHideMenuBar: true, show: false, center: true,
+        autoHideMenuBar: true, menuBarVisible: false, show: false, center: true,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true, nodeIntegration: false,
@@ -30,6 +30,7 @@ function createWindow() {
         icon: path.join(__dirname, 'assets/icon.ico')
     });
 
+    mainWindow.setMenu(null);
     mainWindow.show();
 
     if (process.env.NODE_ENV === 'development') {

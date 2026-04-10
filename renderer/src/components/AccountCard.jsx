@@ -1,5 +1,5 @@
 import { memo, useState, useEffect, useRef } from 'react'
-import { Play, Trash2, Monitor, Tag, GripVertical, ShieldCheck, Loader2, RefreshCw } from 'lucide-react'
+import { Play, Trash2, Copy, Tag, GripVertical, ShieldCheck, Loader2, RefreshCw } from 'lucide-react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Button } from '@/components/ui/button'
@@ -66,50 +66,40 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, on
   }
 
   return (
-    <div ref={setNodeRef} style={style} className="flex items-center gap-2 py-3 px-1 group animate-fade-in">
-      <button {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing text-muted-foreground/40 hover:text-muted-foreground transition-colors shrink-0">
+    <div ref={setNodeRef} style={style} className="flex items-center py-3 px-1 group animate-fade-in overflow-hidden">
+      <button {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing text-muted-foreground/40 hover:text-muted-foreground transition-colors shrink-0 mr-2">
         <GripVertical className="h-4 w-4" />
       </button>
 
-      <div className="flex-1 min-w-0 mr-2">
-        <div className="flex items-center gap-2">
-          <p className="text-sm font-medium truncate" title={displayName}>
-            {riotId}
-            {account.nickname && <span className="text-muted-foreground font-normal"> ({account.nickname})</span>}
-          </p>
-        </div>
-        <div className="flex items-center gap-2 mt-0.5 h-4 whitespace-nowrap overflow-hidden">
+      <div className="min-w-0 flex-1 overflow-hidden mr-2">
+        <p className="text-sm font-medium truncate" title={displayName}>
+          {riotId}
+          {account.nickname && <span className="text-muted-foreground font-normal text-xs"> ({account.nickname})</span>}
+        </p>
+        <div className="flex items-center gap-2 mt-0.5 h-4 whitespace-nowrap">
           <span className="text-xs text-muted-foreground">{account.region || 'N/A'}</span>
           <span className="text-xs text-muted-foreground">{formatTime(account.lastUsed)}</span>
           <StatusIndicator status={launchStatus} />
         </div>
       </div>
 
-      <div className="flex items-center gap-1">
-        <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity" onClick={handleCheckSession} disabled={sessionState === 'checking'} title="Check session health">
+      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCheckSession} disabled={sessionState === 'checking'} title="Check session">
           {sessionState === 'checking' ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" /> :
            sessionState === 'valid' ? <ShieldCheck className="h-3.5 w-3.5 text-purple-500" /> :
            sessionState === 'unknown' ? <ShieldCheck className="h-3.5 w-3.5 text-amber-500" /> :
            sessionState === 'expired' ? <RefreshCw className="h-3.5 w-3.5 text-destructive" /> :
            <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground" />}
         </Button>
-
-        <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground" onClick={() => onSetNickname(account)} title="Set nickname">
+        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => onSetNickname(account)} title="Set nickname">
           <Tag className="h-3.5 w-3.5" />
         </Button>
-
-        <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground" onClick={() => onCopySettings(account)} title="Copy video settings to this account">
-          <Monitor className="h-3.5 w-3.5" />
+        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => onCopySettings(account)} title="Copy settings">
+          <Copy className="h-3.5 w-3.5" />
         </Button>
-
-        <Button size="sm" onClick={() => onLaunch(account.id)} disabled={disabled} className="gap-1.5 min-w-[90px] justify-center">
-          <Play className="h-3 w-3" />
-          {isLaunching ? 'Launching' : isRunning ? 'Running' : 'Launch'}
-        </Button>
-
         <AlertDialog>
           <AlertDialogTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive">
+            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive">
               <Trash2 className="h-3.5 w-3.5" />
             </Button>
           </AlertDialogTrigger>
@@ -129,6 +119,11 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, on
           </AlertDialogContent>
         </AlertDialog>
       </div>
+
+      <Button size="sm" onClick={() => onLaunch(account.id)} disabled={disabled} className="gap-1.5 min-w-[90px] justify-center shrink-0 ml-1">
+        <Play className="h-3 w-3" />
+        {isLaunching ? 'Launching' : isRunning ? 'Running' : 'Launch'}
+      </Button>
     </div>
   )
 })
