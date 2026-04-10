@@ -22,6 +22,100 @@ const AUTH_SNAPSHOT_DIRS = [
     { rel: 'Data/Sessions' },
 ];
 
+// Per-category key patterns for surgical settings merges. Substring match (case-sensitive).
+// Tested against the suffix of actual Valorant setting enums like
+// `EAresFloatSettingName::MouseSensitivityADS`. Never include account-bound or
+// progress/flag keys — those go in EXCLUDE_KEY_PATTERNS.
+const KEY_PATTERNS = {
+    crosshair: [
+        'Crosshair',
+        'SavedCrosshairProfileData',
+        'FadeCrosshairWithFiringError',
+    ],
+    sensitivity: [
+        'MouseSensitivity',          // MouseSensitivity, MouseSensitivityADS, MouseSensitivityZoomed
+        'MouseInverted',
+        'Gamepad',                   // GamepadBaseRotationSpeedX/Y, deadzones
+    ],
+    audio: [
+        'Volume',                    // OverallVolume, VoiceVolume, SoundEffectsVolume, MusicVolume, etc.
+        'HRTF',
+        'Mic',                       // MicVolume, MicSensitivityThreshold
+        'VoipDucks',                 // VoipDucksMusicVolume, VoipDucksVOFlavor
+        'MuteMusicOnAppWindowDeactivate',
+        'EnableHRTF',
+        'VoiceDevice',               // VoiceDeviceCaptureHandle, VoiceDeviceRenderHandle
+        'PushToTalk',                // PushToTalkEnabled, PushToTalkKey, TeamPushToTalkKey
+        'TeamVoiceChatEnabled',
+        'CustomPartyVoiceChatEnabled',
+    ],
+    video: [
+        // Per-account graphics quality (NOT resolution — that's in the global WindowsClient/GameUserSettings.ini)
+        'AntiAliasing',
+        'AnisotropicFiltering',
+        'BloomQuality',
+        'DetailQuality',
+        'MaterialQuality',
+        'TextureQuality',
+        'UIQuality',
+        'ShadowsEnabled',
+        'VignetteEnabled',
+        'DisableDistortion',
+        'ImproveClarity',
+        'EnableInstabilityIndicators',
+        'AdaptiveSharpenEnabled',
+        'NvidiaReflexLowLatencySetting',
+        'LimitFramerate',            // LimitFramerateInBackground/InMenu/OnBattery
+    ],
+    minimap: [
+        'Minimap',                   // MinimapFixedRotation, MinimapTranslates, MinimapSize, MinimapZoom
+        'ShowKeybindsOnMinimap',
+    ],
+    hud: [
+        'AlwaysShowInventoryWidgets',
+        'PlayerPerfShow',            // PlayerPerfShowFrameRate / NetworkRtt / PacketLoss / etc.
+        'ShowBlood',
+        'ShowBulletTracers',
+        'ShowCorpses',
+        'ColorBlindMode',
+        'SpectatorCountWidgetVisible',
+        'CollectionShowOwnedOnly',   // collection UI toggle
+    ],
+    gameplay: [
+        'AutoEquip',                 // AutoEquipSkipsMelee, AutoEquipPrioritizeStrongest
+        'AutoRescopeSniper',
+        'CycleThroughSniperZoomLevels',
+        'HoldInputForADS',
+        'HoldInputForSniperScopes',
+        'SniperToggleHoldInputCycles',
+        'AESWheelHold',              // AESWheelHoldDelayMS, AESWheelHoldEnabled
+        'PingWheelHold',             // PingWheelHoldDelayMS
+        'ShootingRange',             // all shooting range settings
+        'Observer',                  // ObserverRunSpeedModifier, WalkSpeed, ObserversSeeBlinds
+    ],
+    // Cloud-only via actionMappings/axisMappings — handled in mergeSelectiveSettings,
+    // not by .ini key patterns. Listed here for symmetry / dialog wiring.
+    keybinds: [],
+};
+
+// Defense-in-depth: never copy these keys regardless of category. Account-bound,
+// progress flags, machine-local identifiers, region pinning, etc. Copying any of
+// these across accounts is what gets you the "VALORANT failed to launch" / temporary
+// suspension screen.
+const EXCLUDE_KEY_PATTERNS = [
+    'HasAccepted',
+    'HasEver',
+    'HasSeen',
+    'LastSeen',
+    'LastAccepted',
+    'LocalSettingsVersion',
+    'RoamingSettingsVersion',
+    'PreferredGamePods',
+    'Premier',
+    'ContextAware',
+    'CodeOfConduct',
+];
+
 class AuthLaunchService {
     constructor(store, authService) {
         this.store = store;
@@ -172,27 +266,48 @@ class AuthLaunchService {
         const args = autoLaunchValorant ? ['--launch-product=valorant', '--launch-patchline=live'] : [];
         spawn(exePath, args, { detached: true, stdio: 'ignore', cwd: path.dirname(exePath) }).unref();
 
-        // Quick auth check (10s) - if fails, session is expired
-        const authResult = await this.waitForAuth(10000);
-        if (!authResult) {
-            console.log('Session expired. Reopening login page...');
-            await this.closeRiotProcesses();
-            await new Promise(r => setTimeout(r, 2000));
+        // Wait up to 20s for the local Riot Client API to come up authed.
+        // 10s was too tight on cold starts / AV scanning / slow disks → false expired.
+        const authResult = await this.waitForAuth(20000);
+        if (authResult) return { sessionExpired: false };
 
-            // Clear session but keep tdid for 2FA bypass
-            const authYamlPath = path.join(riotDir, 'Data', 'RiotGamesPrivateSettings.yaml');
-            try {
-                const content = await fs.readFile(authYamlPath, 'utf-8');
-                const parsed = yaml.parse(content);
-                if (parsed?.['riot-login']) parsed['riot-login'].persist = null;
-                await fs.writeFile(authYamlPath, yaml.stringify(parsed), 'utf-8');
-            } catch {}
-            for (const f of ['Config/lockfile', 'Config/lockfile_']) await fs.unlink(path.join(riotDir, f)).catch(() => {});
+        // Local API didn't come up in time. Before doing anything destructive,
+        // verify via SSID against Riot's auth endpoint — if cookies are still valid,
+        // the issue is just slow startup, not an expired session.
+        console.log('Local auth timeout — verifying session via SSID before declaring expired...');
+        try {
+            const cookies = await this.extractCookiesFromSnapshot(account.id);
+            if (cookies?.ssid && this.authService) {
+                const ssidResult = await this.authService._performSSIDAuth(cookies.ssid, cookies.clid, cookies.csid, cookies.tdid);
+                if (ssidResult.success || ssidResult.transient) {
+                    // Session is still valid (or we can't tell). Give the local client more time
+                    // instead of nuking the auth state.
+                    console.log('SSID still valid — extending wait for slow Riot Client startup.');
+                    const extended = await this.waitForAuth(30000);
+                    if (extended) return { sessionExpired: false };
+                    // Still nothing — return success anyway and let the user retry.
+                    // We refuse to wipe the snapshot's auth on a timeout when SSID looks fine.
+                    return { sessionExpired: false };
+                }
+            }
+        } catch (e) { console.warn('SSID verification failed:', e.message); }
 
-            spawn(exePath, [], { detached: true, stdio: 'ignore', cwd: path.dirname(exePath) }).unref();
-            return { sessionExpired: true };
-        }
-        return { sessionExpired: false };
+        // SSID definitively expired → safe to clear and prompt re-login
+        console.log('Session truly expired. Reopening login page...');
+        await this.closeRiotProcesses();
+        await new Promise(r => setTimeout(r, 2000));
+
+        const authYamlPath = path.join(riotDir, 'Data', 'RiotGamesPrivateSettings.yaml');
+        try {
+            const content = await fs.readFile(authYamlPath, 'utf-8');
+            const parsed = yaml.parse(content);
+            if (parsed?.['riot-login']) parsed['riot-login'].persist = null;
+            await fs.writeFile(authYamlPath, yaml.stringify(parsed), 'utf-8');
+        } catch {}
+        for (const f of ['Config/lockfile', 'Config/lockfile_']) await fs.unlink(path.join(riotDir, f)).catch(() => {});
+
+        spawn(exePath, [], { detached: true, stdio: 'ignore', cwd: path.dirname(exePath) }).unref();
+        return { sessionExpired: true };
     }
 
     // Called after user re-logs in on expired session
@@ -205,18 +320,13 @@ class AuthLaunchService {
         await this.closeRiotProcesses();
     }
 
-    // Fallback: use the product-launcher API if Valorant didn't auto-launch
+    // Fallback: use the product-launcher API if Valorant didn't auto-launch from --launch-product.
+    // Respawning with --launch-product doesn't help: single-instance detection routes the args
+    // to the running instance which doesn't honor them mid-session.
     async tryApiLaunch() {
         try {
             const r = await this._localApi('POST', '/product-launcher/v1/products/valorant/patchlines/live', {});
             if (r && r.ok) { console.log('Valorant launched via API.'); return true; }
-        } catch {}
-        // Second fallback: spawn another instance with --launch-product
-        try {
-            const exePath = await this.getRiotClientPath();
-            spawn(exePath, ['--launch-product=valorant', '--launch-patchline=live'], { detached: true, stdio: 'ignore', cwd: path.dirname(exePath) }).unref();
-            console.log('Launched second instance with --launch-product.');
-            return true;
         } catch {}
         return false;
     }
@@ -342,8 +452,14 @@ class AuthLaunchService {
         const cmd = `taskkill /F ${procs.map(p => `/IM ${p}`).join(' ')} /T`;
         await new Promise(r => exec(cmd, () => r()));
         await new Promise(r => setTimeout(r, 1000));
-        for (let i = 0; i < 5; i++) {
-            if (!await this._isProcessRunning('RiotClientServices.exe')) break;
+        // Verify ALL processes are dead. Valorant is the slowest to exit (Vanguard unload, etc).
+        for (let i = 0; i < 10; i++) {
+            const [svc, val, ux] = await Promise.all([
+                this._isProcessRunning('RiotClientServices.exe'),
+                this._isProcessRunning('VALORANT-Win64-Shipping.exe'),
+                this._isProcessRunning('RiotClientUx.exe'),
+            ]);
+            if (!svc && !val && !ux) return;
             await new Promise(r => exec(cmd, () => r()));
             await new Promise(r => setTimeout(r, 1500));
         }
@@ -403,7 +519,154 @@ class AuthLaunchService {
 
     // --- Copy game settings ---
 
-    async copyGameSettings(fromPuuid, toPuuid) {
+    // Reads a source account's RiotUserSettings.ini and converts each pattern-matching
+    // key into cloud-blob shape: { floatSettings: [...], boolSettings: [...], ... }.
+    // Used to backfill the cloud blob with values that Valorant only writes locally
+    // (e.g. MouseSensitivityADS, MouseSensitivityZoomed, gamepad deadzones) so the
+    // cloud sync on next launch doesn't override our local merge with stale values.
+    async readLocalSettingsAsCloudShape(puuid, keyPatterns) {
+        const result = { floatSettings: [], boolSettings: [], stringSettings: [], intSettings: [] };
+        const base = path.join(process.env.LOCALAPPDATA, 'VALORANT', 'Saved', 'Config');
+        let dir;
+        try {
+            const entries = await fs.readdir(base);
+            const match = entries.find(e => e.toLowerCase().startsWith(puuid.toLowerCase()));
+            if (!match) return result;
+            dir = path.join(base, match, 'Windows');
+        } catch { return result; }
+
+        let content;
+        try { content = await fs.readFile(path.join(dir, 'RiotUserSettings.ini'), 'utf-8'); }
+        catch { return result; }
+
+        const isExcluded = (key) => EXCLUDE_KEY_PATTERNS.some(p => key.toLowerCase().includes(p.toLowerCase()));
+        const matches = (key) => !isExcluded(key) && keyPatterns.some(p => key.toLowerCase().includes(p.toLowerCase()));
+
+        for (const rawLine of content.split(/\r?\n/)) {
+            const line = rawLine.trim();
+            if (!line || line.startsWith('[') || line.startsWith(';') || line.startsWith('#')) continue;
+            const eq = line.indexOf('=');
+            if (eq < 0) continue;
+            const key = line.slice(0, eq).trim();
+            const rawValue = line.slice(eq + 1);
+            if (!matches(key)) continue;
+
+            // Type from key prefix (EAresFloat / EAresBool / EAresInt / EAresString)
+            if (key.startsWith('EAresFloatSettingName::')) {
+                const v = parseFloat(rawValue);
+                if (!Number.isNaN(v)) result.floatSettings.push({ settingEnum: key, value: v });
+            } else if (key.startsWith('EAresBoolSettingName::')) {
+                result.boolSettings.push({ settingEnum: key, value: /^true$/i.test(rawValue.trim()) });
+            } else if (key.startsWith('EAresIntSettingName::')) {
+                const v = parseInt(rawValue, 10);
+                if (!Number.isNaN(v)) result.intSettings.push({ settingEnum: key, value: v });
+            } else if (key.startsWith('EAresStringSettingName::')) {
+                result.stringSettings.push({ settingEnum: key, value: rawValue });
+            }
+        }
+        return result;
+    }
+
+    // Mirror source's pattern-matching keys onto target RiotUserSettings.ini.
+    // Semantics:
+    //   - keys matching the pattern in source → copy/overwrite in target
+    //   - keys matching the pattern in target but NOT in source → DELETE from target
+    //     (Valorant will recreate them at default on next launch — matches source's
+    //     implicit default, since Valorant only persists non-default values)
+    //   - keys NOT matching the pattern → left alone
+    async mergeIniKeys(fromPuuid, toPuuid, fileName, keyPatterns) {
+        const { src, dst } = await this._resolveValorantConfigDirs(fromPuuid, toPuuid);
+        const srcPath = path.join(src, fileName);
+        const dstPath = path.join(dst, fileName);
+        let srcContent, dstContent;
+        try { srcContent = await fs.readFile(srcPath, 'utf-8'); } catch { return { merged: 0, removed: 0 }; }
+        try { dstContent = await fs.readFile(dstPath, 'utf-8'); } catch { dstContent = ''; }
+
+        const isExcluded = (key) => EXCLUDE_KEY_PATTERNS.some(p => key.toLowerCase().includes(p.toLowerCase()));
+        const matches = (key) => !isExcluded(key) && keyPatterns.some(p => key.toLowerCase().includes(p.toLowerCase()));
+
+        // Parse source into { section: { key: rawLine } }. Section tracking is
+        // per-pattern — most Riot config uses a single [Settings] section anyway.
+        const srcMap = {};
+        let curSection = '';
+        for (const rawLine of srcContent.split(/\r?\n/)) {
+            const line = rawLine.trim();
+            const sec = line.match(/^\[(.+)\]$/);
+            if (sec) { curSection = sec[1]; srcMap[curSection] = srcMap[curSection] || {}; continue; }
+            const kv = line.match(/^([^=;#\s][^=]*?)=(.*)$/);
+            if (kv && matches(kv[1].trim())) {
+                srcMap[curSection] = srcMap[curSection] || {};
+                srcMap[curSection][kv[1].trim()] = rawLine;
+            }
+        }
+
+        // Walk target: replace matching-keys-in-both, DELETE matching-keys-not-in-source.
+        // Build a new line array instead of in-place splice to keep indices sane.
+        const consumed = new Set();
+        let merged = 0, removed = 0;
+        const outLines = [];
+        const dstSections = new Map(); // section → index in OUT array of last non-empty line in that section
+        let tgtSection = '';
+
+        for (const rawLine of dstContent.split(/\r?\n/)) {
+            const line = rawLine.trim();
+            const sec = line.match(/^\[(.+)\]$/);
+            if (sec) {
+                tgtSection = sec[1];
+                outLines.push(rawLine);
+                dstSections.set(tgtSection, outLines.length - 1);
+                continue;
+            }
+            const kv = line.match(/^([^=;#\s][^=]*?)=(.*)$/);
+            if (kv) {
+                const key = kv[1].trim();
+                if (matches(key)) {
+                    const srcLine = srcMap[tgtSection]?.[key];
+                    if (srcLine !== undefined) {
+                        outLines.push(srcLine);
+                        consumed.add(`${tgtSection}::${key}`);
+                        merged++;
+                    } else {
+                        // Matching pattern but not in source → drop it (Valorant will re-default on launch)
+                        removed++;
+                        continue;
+                    }
+                } else {
+                    outLines.push(rawLine);
+                }
+            } else {
+                outLines.push(rawLine);
+            }
+            if (outLines.length && outLines[outLines.length - 1].trim()) {
+                dstSections.set(tgtSection, outLines.length - 1);
+            }
+        }
+
+        // Append source-only keys (matching pattern, not yet in target) to their section.
+        for (const [section, keys] of Object.entries(srcMap)) {
+            for (const [key, srcLine] of Object.entries(keys)) {
+                if (consumed.has(`${section}::${key}`)) continue;
+                if (dstSections.has(section)) {
+                    const insertAt = dstSections.get(section) + 1;
+                    outLines.splice(insertAt, 0, srcLine);
+                    for (const [s, idx] of dstSections) if (idx >= insertAt) dstSections.set(s, idx + 1);
+                    dstSections.set(section, insertAt);
+                } else {
+                    if (outLines.length && outLines[outLines.length - 1] !== '') outLines.push('');
+                    outLines.push(`[${section}]`);
+                    outLines.push(srcLine);
+                    dstSections.set(section, outLines.length - 1);
+                }
+                merged++;
+            }
+        }
+
+        await fs.mkdir(dst, { recursive: true });
+        await fs.writeFile(dstPath, outLines.join('\r\n'), 'utf-8');
+        return { merged, removed };
+    }
+
+    async _resolveValorantConfigDirs(fromPuuid, toPuuid) {
         const base = path.join(process.env.LOCALAPPDATA, 'VALORANT', 'Saved', 'Config');
         const findDir = async (puuid) => {
             try {
@@ -416,12 +679,7 @@ class AuthLaunchService {
         if (!src) throw new Error('Source account settings not found. Launch Valorant with that account first.');
         const dst = await findDir(toPuuid);
         if (!dst) throw new Error('Target account config not found. Launch Valorant with that account first.');
-        await fs.mkdir(dst, { recursive: true });
-        const files = (await fs.readdir(src)).filter(f => f.endsWith('.ini'));
-        if (!files.length) throw new Error('No settings files found.');
-        let copied = 0;
-        for (const file of files) { await fs.copyFile(path.join(src, file), path.join(dst, file)); copied++; }
-        return { copied, files };
+        return { src, dst };
     }
 
     // --- Session cookie extraction from snapshot ---
@@ -440,4 +698,4 @@ class AuthLaunchService {
     }
 }
 
-module.exports = { AuthLaunchService };
+module.exports = { AuthLaunchService, KEY_PATTERNS, EXCLUDE_KEY_PATTERNS };

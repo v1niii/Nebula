@@ -52,9 +52,9 @@ export function AddAccountSection({ onLogin, onImport }) {
         <CardDescription>Opens the Riot Client to log in, or captures from a running session.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="flex items-start gap-2 rounded-md border border-purple-300/50 bg-purple-500/10 px-3 py-2">
-          <Info className="h-3.5 w-3.5 text-purple-400 mt-0.5 shrink-0" />
-          <p className="text-xs text-purple-300">
+        <div className="flex items-start gap-2 rounded-md border border-purple-500/40 bg-purple-500/10 dark:bg-purple-500/10 px-3 py-2">
+          <Info className="h-3.5 w-3.5 text-purple-700 dark:text-purple-300 mt-0.5 shrink-0" />
+          <p className="text-xs text-foreground">
             <span className="font-semibold">Always check "Stay signed in"</span> when logging in. Sessions last ~1-3 weeks.
           </p>
         </div>

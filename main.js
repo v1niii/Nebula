@@ -7,7 +7,7 @@ const store = require('electron-store');
 app.setName('Nebula');
 if (process.platform === 'win32') app.setAppUserModelId('com.v1niii.nebula');
 const { AuthService } = require('./auth-service');
-const { AuthLaunchService } = require('./auth-launch-service');
+const { AuthLaunchService, KEY_PATTERNS, EXCLUDE_KEY_PATTERNS } = require('./auth-launch-service');
 
 const appStore = new store({ clearInvalidConfig: true });
 const authService = new AuthService(appStore);
@@ -16,6 +16,7 @@ const authLaunchService = new AuthLaunchService(appStore, authService);
 let mainWindow;
 let tray = null;
 let valorantProcessWatcher = null;
+let watchedAccountId = null;
 
 function createWindow() {
     mainWindow = new BrowserWindow({
@@ -209,6 +210,10 @@ ipcMain.handle('launch-valorant', async (event, accountId) => {
     launchInProgress = true;
     // Stop the previous watcher and wait for any in-flight snapshot to complete BEFORE
     // we start overwriting the Riot Client directory with the new account's data.
+    // Also reset the previously-watched account's UI state so it doesn't stay stuck on "Running".
+    if (watchedAccountId && watchedAccountId !== accountId && mainWindow) {
+        mainWindow.webContents.send('update-launch-status', watchedAccountId, 'idle');
+    }
     stopValorantWatcher();
     await snapshotChain;
     if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'launching');
@@ -249,14 +254,7 @@ ipcMain.handle('launch-valorant', async (event, accountId) => {
     }
 });
 
-ipcMain.handle('copy-settings', async (event, fromId, toId) => {
-    try {
-        const result = await authLaunchService.copyGameSettings(fromId, toId);
-        return { success: true, copied: result.copied, method: 'local' };
-    } catch (error) { return { success: false, error: error.message }; }
-});
-
-ipcMain.handle('copy-cloud-settings', async (event, fromId, toId) => {
+ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) => {
     try {
         const fromAcc = authService.getAccountById(fromId);
         const toAcc = authService.getAccountById(toId);
@@ -278,15 +276,78 @@ ipcMain.handle('copy-cloud-settings', async (event, fromId, toId) => {
         const srcAuth = await authService.getCloudAuthTokens(srcCookies.ssid, srcCookies.clid, srcCookies.csid, srcCookies.tdid);
         const dstAuth = await authService.getCloudAuthTokens(dstCookies.ssid, dstCookies.clid, dstCookies.csid, dstCookies.tdid);
 
-        // Copy cloud settings (crosshair, sens, keybinds)
-        const settings = await authService.getCloudSettings(srcAuth.accessToken, srcAuth.entitlementsToken, fromAcc.region);
-        await authService.putCloudSettings(dstAuth.accessToken, dstAuth.entitlementsToken, toAcc.region, settings);
+        const srcBlob = await authService.getCloudSettings(srcAuth.accessToken, srcAuth.entitlementsToken, fromAcc.region);
 
-        // Also copy local .ini files (catches settings like scoped sensitivity that cloud misses)
-        try { await authLaunchService.copyGameSettings(fromId, toId); } catch {}
+        const allCatKeys = Object.keys(KEY_PATTERNS);
+        const cats = categories || Object.fromEntries(allCatKeys.map(k => [k, true]));
 
-        return { success: true };
-    } catch (error) { return { success: false, error: error.message }; }
+        // Always go through the surgical merge — even when every category is selected —
+        // so account-bound flags inside the source blob never overwrite the target's.
+        // The merge strips excluded keys regardless of which categories are enabled.
+        const dstBlob = await authService.getCloudSettings(dstAuth.accessToken, dstAuth.entitlementsToken, toAcc.region);
+        const { settings: srcSettings, method } = authService._decodeSettingsBlob(srcBlob.data);
+        const { settings: dstSettings } = authService._decodeSettingsBlob(dstBlob.data);
+
+        // CRITICAL: Valorant doesn't sync every key to cloud (e.g. MouseSensitivityADS,
+        // MouseSensitivityZoomed, gamepad deadzones live in local file only). If we only
+        // merge cloud-from-cloud, the target's old cloud values survive and override our
+        // local-file write on next launch. Backfill source blob with local file values
+        // for any pattern in the enabled categories.
+        const enabledPatterns = [];
+        for (const cat of allCatKeys) {
+            if (cats[cat] && KEY_PATTERNS[cat]?.length) enabledPatterns.push(...KEY_PATTERNS[cat]);
+        }
+        if (enabledPatterns.length) {
+            const localShape = await authLaunchService.readLocalSettingsAsCloudShape(fromId, enabledPatterns);
+            for (const arrName of ['floatSettings', 'boolSettings', 'stringSettings', 'intSettings']) {
+                if (!srcSettings[arrName]) srcSettings[arrName] = [];
+                for (const entry of localShape[arrName]) {
+                    const idx = srcSettings[arrName].findIndex(s => s.settingEnum === entry.settingEnum);
+                    if (idx >= 0) srcSettings[arrName][idx] = entry; // local file is source of truth
+                    else srcSettings[arrName].push(entry);
+                }
+            }
+        }
+
+        const merged = authService.mergeSelectiveSettings(srcSettings, dstSettings, cats, KEY_PATTERNS, EXCLUDE_KEY_PATTERNS);
+
+        // Diagnostic: log what the cloud merge actually did for sensitivity
+        if (cats.sensitivity) {
+            const sensKeys = (arr) => (arr || []).filter(s => s.settingEnum?.toLowerCase().includes('sensitivity'));
+            console.log('[copy] cloud srcSettings sens (after local backfill):', sensKeys(srcSettings.floatSettings));
+            console.log('[copy] cloud merged sens:    ', sensKeys(merged.floatSettings));
+        }
+
+        const newData = authService._encodeSettingsBlob(merged, method);
+        await authService.putCloudSettings(dstAuth.accessToken, dstAuth.entitlementsToken, toAcc.region, { data: newData });
+
+        // Surgical local merge against the per-account RiotUserSettings.ini.
+        // Cloud blob does NOT contain ADS / Zoomed sensitivity, gamepad deadzones,
+        // local audio device handles, or PTT keybinds — those are local-only.
+        const iniPatterns = [];
+        for (const cat of allCatKeys) {
+            if (cats[cat] && KEY_PATTERNS[cat]?.length) iniPatterns.push(...KEY_PATTERNS[cat]);
+        }
+        let localMergeWarning = null;
+        if (iniPatterns.length) {
+            try {
+                const localResult = await authLaunchService.mergeIniKeys(fromId, toId, 'RiotUserSettings.ini', iniPatterns);
+                console.log(`[copy] local RiotUserSettings.ini: merged ${localResult.merged} keys, removed ${localResult.removed} keys`);
+                if (localResult.merged === 0 && localResult.removed === 0) {
+                    localMergeWarning = 'Local file merge touched 0 keys — target account may have never launched Valorant on this PC.';
+                    console.warn('[copy]', localMergeWarning);
+                }
+            } catch (e) {
+                localMergeWarning = `Local file merge failed: ${e.message}`;
+                console.warn('[copy]', localMergeWarning);
+            }
+        }
+
+        return { success: true, localMergeWarning };
+    } catch (error) {
+        console.error('[copy] cloud copy failed:', error);
+        return { success: false, error: error.message };
+    }
 });
 
 // --- Settings IPC ---
@@ -342,6 +403,7 @@ function sendStatus(accountId, status, message) {
 
 function startValorantWatcher(accountId) {
     stopValorantWatcher();
+    watchedAccountId = accountId;
     let valorantFound = false, checks = 0, apiTried = false;
     valorantProcessWatcher = setInterval(async () => {
         checks++;
@@ -349,6 +411,13 @@ function startValorantWatcher(accountId) {
             const valRunning = await authLaunchService.isValorantRunning();
 
             if (valRunning && !valorantFound) {
+                // Verify the running Riot Client is authed as THIS account
+                // (prevents false positives from leftover Valorant from the previous account)
+                const auth = await authLaunchService.getAuthenticatedAccount();
+                if (!auth || auth.puuid !== accountId) {
+                    // Wrong account or not yet authed - wait more
+                    return;
+                }
                 valorantFound = true;
                 releaseLaunchLock();
                 queueSnapshot(accountId);
@@ -373,4 +442,5 @@ function startValorantWatcher(accountId) {
 
 function stopValorantWatcher() {
     if (valorantProcessWatcher) { clearInterval(valorantProcessWatcher); valorantProcessWatcher = null; }
+    watchedAccountId = null;
 }

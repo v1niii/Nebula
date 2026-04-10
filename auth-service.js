@@ -228,9 +228,17 @@ class AuthService {
   }
 
   async checkSessionWithCookies(accountId, cookies) {
+    if (!cookies?.ssid) return { valid: false, reason: 'No SSID cookie.' };
     try {
-      if (!cookies?.ssid) return { valid: false, reason: 'No SSID cookie.' };
-      const result = await this._performSSIDAuth(cookies.ssid, cookies.clid, cookies.csid, cookies.tdid);
+      // First attempt
+      let result = await this._performSSIDAuth(cookies.ssid, cookies.clid, cookies.csid, cookies.tdid);
+
+      // Retry once on transient failure (network blip, 5xx, rate limit, 200 HTML form)
+      if (!result.success && result.transient) {
+        await new Promise(r => setTimeout(r, 1500));
+        result = await this._performSSIDAuth(cookies.ssid, cookies.clid, cookies.csid, cookies.tdid);
+      }
+
       if (result.success) {
         await this.storeCookiesSecurely(accountId, {
           ssid: result.ssid, clid: result.clid || '', csid: result.csid || '',
@@ -238,9 +246,19 @@ class AuthService {
         });
         return { valid: true };
       }
+
+      // Still transient after retry → mark unknown, NOT expired. The UI shows
+      // an amber icon and the user can re-check; we don't trash trusted cookies
+      // because Riot was flaky for a moment.
+      if (result.transient) {
+        return { valid: null, reason: result.message || 'Could not verify session (network).' };
+      }
+
+      // Definitive expiry only
       return { valid: false, reason: result.message || 'Session expired (~1-3 weeks lifespan).' };
     } catch (e) {
-      return { valid: false, reason: e.message };
+      // Unexpected exception → also treat as unknown, not expired
+      return { valid: null, reason: `Verification error: ${e.message}` };
     }
   }
 
@@ -343,6 +361,96 @@ class AuthService {
     return res.json();
   }
 
+  // Decode a cloud settings blob (base64 → decompress → JSON).
+  // Tries raw deflate first (legacy format), falls back to gzip.
+  _decodeSettingsBlob(base64Data) {
+    const buf = Buffer.from(base64Data, 'base64');
+    const tryMethods = [
+      () => zlib.inflateRawSync(buf),
+      () => zlib.gunzipSync(buf),
+      () => zlib.inflateSync(buf),
+    ];
+    let lastErr;
+    for (const decode of tryMethods) {
+      try { return { settings: JSON.parse(decode().toString('utf-8')), method: decode }; }
+      catch (e) { lastErr = e; }
+    }
+    throw new Error('Could not decode settings blob: ' + lastErr?.message);
+  }
+
+  // Encode settings back to base64 using the same compression method that decoded them
+  _encodeSettingsBlob(settings, method) {
+    const json = JSON.stringify(settings);
+    const buf = Buffer.from(json, 'utf-8');
+    // Use the same compression as decode for round-trip compatibility
+    let compressed;
+    if (method === zlib.inflateRawSync || method?.toString().includes('inflateRaw')) {
+      compressed = zlib.deflateRawSync(buf);
+    } else if (method === zlib.gunzipSync || method?.toString().includes('gunzip')) {
+      compressed = zlib.gzipSync(buf);
+    } else {
+      compressed = zlib.deflateSync(buf);
+    }
+    return compressed.toString('base64');
+  }
+
+  // Mirror source cloud settings onto target for each enabled category. "Mirror"
+  // means: for any key matching the category's patterns, target ends up with
+  // EXACTLY what source has — including absences. If source doesn't have a key,
+  // it's removed from target so Valorant re-creates it at default on next launch.
+  // This handles the common case where Valorant only persists non-default values
+  // (e.g. MouseSensitivityADS=1.0 is never written, so source's cloud+local are
+  // both missing it; target's old custom value must be wiped to match).
+  mergeSelectiveSettings(sourceSettings, targetSettings, categories, patterns, excludePatterns = []) {
+    const merged = JSON.parse(JSON.stringify(targetSettings));
+    const exclude = excludePatterns;
+
+    const isExcluded = (key) => exclude.some(p => key.toLowerCase().includes(p.toLowerCase()));
+    const matchesAny = (key, pats) => !isExcluded(key) && pats.some(p => key.toLowerCase().includes(p.toLowerCase()));
+
+    if (categories.keybinds) {
+      merged.actionMappings = sourceSettings.actionMappings || merged.actionMappings;
+      merged.axisMappings = sourceSettings.axisMappings || merged.axisMappings;
+    }
+
+    const mirrorArray = (arrayName, pats) => {
+      if (!merged[arrayName]) merged[arrayName] = [];
+      const srcArr = sourceSettings[arrayName] || [];
+      const srcKeysForPattern = new Set(
+        srcArr
+          .filter(s => s.settingEnum && matchesAny(s.settingEnum, pats))
+          .map(s => s.settingEnum)
+      );
+
+      // 1. Remove target keys that match the pattern but aren't in source (mirror wipe).
+      merged[arrayName] = merged[arrayName].filter(s => {
+        if (!s.settingEnum) return true;
+        if (!matchesAny(s.settingEnum, pats)) return true;     // not our category, leave alone
+        return srcKeysForPattern.has(s.settingEnum);            // drop if source doesn't have it
+      });
+
+      // 2. Overwrite or append source values for matching keys.
+      for (const src of srcArr) {
+        if (!src.settingEnum || !matchesAny(src.settingEnum, pats)) continue;
+        const idx = merged[arrayName].findIndex(s => s.settingEnum === src.settingEnum);
+        if (idx >= 0) merged[arrayName][idx] = { ...src };
+        else merged[arrayName].push({ ...src });
+      }
+    };
+
+    for (const [cat, enabled] of Object.entries(categories)) {
+      if (!enabled || cat === 'keybinds') continue;
+      const pats = patterns[cat];
+      if (!pats || !pats.length) continue;
+      mirrorArray('floatSettings', pats);
+      mirrorArray('boolSettings', pats);
+      mirrorArray('stringSettings', pats);
+      mirrorArray('intSettings', pats);
+    }
+
+    return merged;
+  }
+
   // --- Private helpers ---
 
   _detectRegion(userInfo) {
@@ -378,13 +486,12 @@ class AuthService {
     if (clid) cookieMap.clid = clid;
     if (csid) cookieMap.csid = csid;
     if (tdid) cookieMap.tdid = tdid;
-    if (!cookieMap.ssid) return { success: false, message: 'SSID required.' };
+    if (!cookieMap.ssid) return { success: false, message: 'SSID required.', transient: false };
 
     try {
       const nonce = crypto.randomBytes(16).toString('base64url');
       const url = `${AUTH_ENDPOINTS.AUTHORIZE}?redirect_uri=https%3A%2F%2Fplayvalorant.com%2Fopt_in&client_id=play-valorant-web-prod&response_type=token%20id_token&nonce=${nonce}&scope=account%20openid`;
 
-      // Use browser-like headers for cookie reauth since cookies come from webview
       const response = await fetch(url, {
         method: 'GET', agent: riotAgent,
         headers: {
@@ -396,18 +503,34 @@ class AuthService {
       });
 
       const redirectUrl = response.headers.get('location');
+
+      // Success: 30x to opt_in URL with access_token in fragment
       if (response.status >= 300 && response.status < 400 && redirectUrl && redirectUrl.includes('access_token')) {
         const params = new URLSearchParams(redirectUrl.split('#')[1]);
         const accessToken = params.get('access_token');
         const idToken = params.get('id_token');
-        if (!accessToken || !idToken) return { success: false, message: 'Tokens not found.', needsRelogin: true };
-
+        if (!accessToken || !idToken) {
+          return { success: false, message: 'Tokens not found in redirect.', transient: true };
+        }
         const latest = this._extractCookies(response, { ...cookieMap });
         return { success: true, accessToken, idToken, ssid: latest.ssid || ssid, clid: latest.clid || clid, csid: latest.csid || csid, tdid: latest.tdid || tdid };
       }
-      return { success: false, message: 'Session expired.', needsRelogin: true };
+
+      // Definitive expiry: 30x to login page (no access_token in URL)
+      if (response.status >= 300 && response.status < 400 && redirectUrl && /login|auth/i.test(redirectUrl) && !redirectUrl.includes('access_token')) {
+        return { success: false, message: 'Session expired.', needsRelogin: true, transient: false };
+      }
+
+      // 401/403: definitively unauthorized
+      if (response.status === 401 || response.status === 403) {
+        return { success: false, message: 'Session rejected by Riot.', needsRelogin: true, transient: false };
+      }
+
+      // 5xx, 429, 200 with HTML form, or anything else ambiguous → don't claim expired
+      return { success: false, message: `Auth check inconclusive (HTTP ${response.status}).`, transient: true };
     } catch (error) {
-      return { success: false, error: 'network_error', message: error.message, needsRelogin: true };
+      // Network error, DNS failure, TLS error, timeout — all transient
+      return { success: false, error: 'network_error', message: error.message, transient: true };
     }
   }
 

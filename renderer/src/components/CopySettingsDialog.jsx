@@ -1,39 +1,77 @@
 import { useState, useEffect } from 'react'
-import { Copy, Monitor, ArrowRightLeft, ArrowDown } from 'lucide-react'
+import { Copy, ArrowRightLeft, ArrowDown, Check } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useToast } from '@/components/ui/toast'
 
+// UI categories are a simplified view over the backend's fine-grained key groups.
+// "other" is a catch-all that expands to every non-primary category on the backend.
+const OTHER_SUBCATS = ['audio', 'video', 'minimap', 'hud', 'gameplay']
+const UI_CATEGORIES = [
+  { key: 'crosshair',   label: 'Crosshair',   desc: 'All profiles, colors, outlines, dot, ADS variants' },
+  { key: 'sensitivity', label: 'Sensitivity', desc: 'Mouse (normal, ADS, scoped), gamepad, invert' },
+  { key: 'keybinds',    label: 'Keybinds',    desc: 'All action and movement key bindings' },
+  { key: 'other',       label: 'Other',       desc: 'Audio, video quality, minimap, HUD, gameplay toggles' },
+]
+const DEFAULT_UI = { crosshair: true, sensitivity: true, keybinds: true, other: true }
+
+// Expand UI selection into the backend's per-category flag map.
+const expandToBackend = (ui) => ({
+  crosshair:   !!ui.crosshair,
+  sensitivity: !!ui.sensitivity,
+  keybinds:    !!ui.keybinds,
+  ...Object.fromEntries(OTHER_SUBCATS.map(k => [k, !!ui.other])),
+})
+
+function CategoryToggle({ checked, onChange, label, desc }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className={`flex items-center gap-2.5 w-full text-left rounded-md border px-3 py-2 transition-colors ${
+        checked ? 'border-purple-500/50 bg-purple-500/10' : 'border-border hover:bg-secondary/50'
+      }`}
+    >
+      <div className={`h-4 w-4 rounded border flex items-center justify-center shrink-0 ${
+        checked ? 'bg-purple-500 border-purple-500' : 'border-muted-foreground/40'
+      }`}>
+        {checked && <Check className="h-3 w-3 text-white" strokeWidth={3} />}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium leading-none">{label}</p>
+        <p className="text-xs text-muted-foreground mt-0.5">{desc}</p>
+      </div>
+    </button>
+  )
+}
+
 export function CopySettingsDialog({ open, onOpenChange, targetAccount, accounts }) {
   const [sourceId, setSourceId] = useState('')
   const [copying, setCopying] = useState(false)
+  const [categories, setCategories] = useState(DEFAULT_UI)
   const toast = useToast()
 
-  useEffect(() => { if (open) setSourceId('') }, [open])
+  useEffect(() => {
+    if (open) {
+      setSourceId('')
+      setCategories(DEFAULT_UI)
+    }
+  }, [open])
 
   const otherAccounts = accounts.filter(a => a.id !== targetAccount?.id)
+  const anySelected = Object.values(categories).some(Boolean)
 
   const handleCopyCloud = async () => {
     if (!sourceId) return toast.error('Select an account to copy from.')
+    if (!anySelected) return toast.error('Select at least one category.')
     setCopying(true)
     try {
-      const result = await window.electronAPI.copyCloudSettings(sourceId, targetAccount.id)
+      const result = await window.electronAPI.copyCloudSettings(sourceId, targetAccount.id, expandToBackend(categories))
       if (result.success) {
-        toast.success('All settings copied (crosshair, sens, keybinds). Restart Valorant to apply.')
-        onOpenChange(false)
-      } else toast.error(result.error)
-    } catch (e) { toast.error(e.message) }
-    finally { setCopying(false) }
-  }
-
-  const handleCopyVideo = async () => {
-    if (!sourceId) return toast.error('Select an account to copy from.')
-    setCopying(true)
-    try {
-      const result = await window.electronAPI.copySettings(sourceId, targetAccount.id)
-      if (result.success) {
-        toast.success(`Copied ${result.copied} video settings file(s).`)
+        const selected = UI_CATEGORIES.filter(c => categories[c.key]).map(c => c.label.toLowerCase()).join(', ')
+        toast.success(`Copied ${selected}. Restart Valorant to apply.`)
+        if (result.localMergeWarning) toast.error(result.localMergeWarning)
         onOpenChange(false)
       } else toast.error(result.error)
     } catch (e) { toast.error(e.message) }
@@ -74,30 +112,27 @@ export function CopySettingsDialog({ open, onOpenChange, targetAccount, accounts
           </div>
 
           <div className="space-y-2">
-            <Button onClick={handleCopyCloud} disabled={copying || !sourceId} className="w-full gap-1.5">
-              <Copy className="h-3.5 w-3.5" />
-              {copying ? 'Copying...' : 'Copy All Settings'}
-            </Button>
-            <p className="text-xs text-muted-foreground">
-              Crosshair, sensitivity, keybinds. Both accounts need active sessions.
-            </p>
+            <label className="text-sm font-medium">Categories</label>
+            <div className="grid grid-cols-2 gap-2">
+              {UI_CATEGORIES.map(c => (
+                <CategoryToggle
+                  key={c.key}
+                  checked={categories[c.key]}
+                  onChange={v => setCategories(prev => ({ ...prev, [c.key]: v }))}
+                  label={c.label}
+                  desc={c.desc}
+                />
+              ))}
+            </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="flex-1 h-px bg-border" />
-            <span className="text-xs text-muted-foreground">or</span>
-            <div className="flex-1 h-px bg-border" />
-          </div>
-
-          <div className="space-y-2">
-            <Button variant="outline" onClick={handleCopyVideo} disabled={copying || !sourceId} className="w-full gap-1.5">
-              <Monitor className="h-3.5 w-3.5" />
-              {copying ? 'Copying...' : 'Copy Video Settings Only'}
-            </Button>
-            <p className="text-xs text-muted-foreground">
-              Resolution, graphics, display. Works anytime.
-            </p>
-          </div>
+          <Button onClick={handleCopyCloud} disabled={copying || !sourceId || !anySelected} className="w-full gap-1.5">
+            <Copy className="h-3.5 w-3.5" />
+            {copying ? 'Copying...' : 'Copy Selected'}
+          </Button>
+          <p className="text-xs text-muted-foreground -mt-2">
+            Both accounts need active sessions. Restart Valorant to apply.
+          </p>
         </div>
       </DialogContent>
     </Dialog>
