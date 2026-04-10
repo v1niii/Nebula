@@ -234,7 +234,12 @@ ipcMain.handle('launch-valorant', async (event, accountId) => {
                 authService.updateLastUsed(accountId);
                 releaseLaunchLock();
                 if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'idle');
-            }).catch(() => { releaseLaunchLock(); });
+            }).catch((e) => {
+                releaseLaunchLock();
+                // Make sure the UI doesn't stay stuck on "error" forever if relogin fails/times out.
+                if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'idle');
+                console.warn('Re-login flow failed:', e?.message || e);
+            });
             return { success: false, error: 'Session expired. Please log in via the Riot Client — session will be saved automatically.', sessionExpired: true };
         }
 
@@ -260,6 +265,13 @@ ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) =>
         const toAcc = authService.getAccountById(toId);
         if (!fromAcc || !toAcc) throw new Error('Account not found.');
 
+        // SAFETY: never write to RiotUserSettings.ini while Valorant is running.
+        // Mid-session file writes are a Vanguard red flag and can trigger the
+        // "VALORANT failed to launch" / temporary suspension screen.
+        if (await authLaunchService.isValorantRunning()) {
+            throw new Error('Close Valorant before copying settings.');
+        }
+
         const getCookies = async (accountId) => {
             const stored = await authService.retrieveCookiesSecurely(accountId);
             if (stored?.ssid) return stored;
@@ -276,76 +288,61 @@ ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) =>
         const srcAuth = await authService.getCloudAuthTokens(srcCookies.ssid, srcCookies.clid, srcCookies.csid, srcCookies.tdid);
         const dstAuth = await authService.getCloudAuthTokens(dstCookies.ssid, dstCookies.clid, dstCookies.csid, dstCookies.tdid);
 
-        const srcBlob = await authService.getCloudSettings(srcAuth.accessToken, srcAuth.entitlementsToken, fromAcc.region);
-
+        // Build the flat list of pattern strings for every enabled category (used by
+        // both the cloud backfill and the local .ini merge — keeps them in lockstep).
         const allCatKeys = Object.keys(KEY_PATTERNS);
         const cats = categories || Object.fromEntries(allCatKeys.map(k => [k, true]));
-
-        // Always go through the surgical merge — even when every category is selected —
-        // so account-bound flags inside the source blob never overwrite the target's.
-        // The merge strips excluded keys regardless of which categories are enabled.
-        const dstBlob = await authService.getCloudSettings(dstAuth.accessToken, dstAuth.entitlementsToken, toAcc.region);
-        const { settings: srcSettings, method } = authService._decodeSettingsBlob(srcBlob.data);
-        const { settings: dstSettings } = authService._decodeSettingsBlob(dstBlob.data);
-
-        // CRITICAL: Valorant doesn't sync every key to cloud (e.g. MouseSensitivityADS,
-        // MouseSensitivityZoomed, gamepad deadzones live in local file only). If we only
-        // merge cloud-from-cloud, the target's old cloud values survive and override our
-        // local-file write on next launch. Backfill source blob with local file values
-        // for any pattern in the enabled categories.
         const enabledPatterns = [];
         for (const cat of allCatKeys) {
             if (cats[cat] && KEY_PATTERNS[cat]?.length) enabledPatterns.push(...KEY_PATTERNS[cat]);
         }
+
+        const [srcBlob, dstBlob] = await Promise.all([
+            authService.getCloudSettings(srcAuth.accessToken, srcAuth.entitlementsToken, fromAcc.region),
+            authService.getCloudSettings(dstAuth.accessToken, dstAuth.entitlementsToken, toAcc.region),
+        ]);
+        const { settings: srcSettings, method } = authService._decodeSettingsBlob(srcBlob.data);
+        const { settings: dstSettings } = authService._decodeSettingsBlob(dstBlob.data);
+
+        // CRITICAL: Valorant only persists non-default values, and some keys
+        // (MouseSensitivityADS/Zoomed, gamepad deadzones, etc.) never sync to cloud.
+        // Backfill the source blob with local-file values so the mirror merge sees
+        // the full picture — otherwise target's old cloud value survives and overrides
+        // our local write on next launch.
         if (enabledPatterns.length) {
             const localShape = await authLaunchService.readLocalSettingsAsCloudShape(fromId, enabledPatterns);
             for (const arrName of ['floatSettings', 'boolSettings', 'stringSettings', 'intSettings']) {
                 if (!srcSettings[arrName]) srcSettings[arrName] = [];
                 for (const entry of localShape[arrName]) {
                     const idx = srcSettings[arrName].findIndex(s => s.settingEnum === entry.settingEnum);
-                    if (idx >= 0) srcSettings[arrName][idx] = entry; // local file is source of truth
+                    if (idx >= 0) srcSettings[arrName][idx] = entry; // local file wins — it's the source of truth
                     else srcSettings[arrName].push(entry);
                 }
             }
         }
 
         const merged = authService.mergeSelectiveSettings(srcSettings, dstSettings, cats, KEY_PATTERNS, EXCLUDE_KEY_PATTERNS);
-
-        // Diagnostic: log what the cloud merge actually did for sensitivity
-        if (cats.sensitivity) {
-            const sensKeys = (arr) => (arr || []).filter(s => s.settingEnum?.toLowerCase().includes('sensitivity'));
-            console.log('[copy] cloud srcSettings sens (after local backfill):', sensKeys(srcSettings.floatSettings));
-            console.log('[copy] cloud merged sens:    ', sensKeys(merged.floatSettings));
-        }
-
         const newData = authService._encodeSettingsBlob(merged, method);
         await authService.putCloudSettings(dstAuth.accessToken, dstAuth.entitlementsToken, toAcc.region, { data: newData });
 
-        // Surgical local merge against the per-account RiotUserSettings.ini.
-        // Cloud blob does NOT contain ADS / Zoomed sensitivity, gamepad deadzones,
-        // local audio device handles, or PTT keybinds — those are local-only.
-        const iniPatterns = [];
-        for (const cat of allCatKeys) {
-            if (cats[cat] && KEY_PATTERNS[cat]?.length) iniPatterns.push(...KEY_PATTERNS[cat]);
-        }
+        // Local .ini merge runs the same pattern set against the per-account
+        // RiotUserSettings.ini with mirror semantics (removing keys that source
+        // doesn't have so Valorant re-defaults them).
         let localMergeWarning = null;
-        if (iniPatterns.length) {
+        if (enabledPatterns.length) {
             try {
-                const localResult = await authLaunchService.mergeIniKeys(fromId, toId, 'RiotUserSettings.ini', iniPatterns);
-                console.log(`[copy] local RiotUserSettings.ini: merged ${localResult.merged} keys, removed ${localResult.removed} keys`);
+                const localResult = await authLaunchService.mergeIniKeys(fromId, toId, 'RiotUserSettings.ini', enabledPatterns);
                 if (localResult.merged === 0 && localResult.removed === 0) {
                     localMergeWarning = 'Local file merge touched 0 keys — target account may have never launched Valorant on this PC.';
-                    console.warn('[copy]', localMergeWarning);
                 }
             } catch (e) {
                 localMergeWarning = `Local file merge failed: ${e.message}`;
-                console.warn('[copy]', localMergeWarning);
             }
         }
 
         return { success: true, localMergeWarning };
     } catch (error) {
-        console.error('[copy] cloud copy failed:', error);
+        console.error('[copy] failed:', error.message);
         return { success: false, error: error.message };
     }
 });
@@ -401,6 +398,12 @@ function sendStatus(accountId, status, message) {
     }
 }
 
+// Poll every 3s for Valorant process + auth match. Timeout at 60 checks = 3 minutes:
+// cold boot + Vanguard init + AV scanning can easily push launch past 90s on slower machines.
+const WATCHER_TICK_MS = 3000;
+const WATCHER_MAX_CHECKS = 60; // 3 minutes
+const WATCHER_API_LAUNCH_CHECK = 2; // ~6s before trying the local API fallback
+
 function startValorantWatcher(accountId) {
     stopValorantWatcher();
     watchedAccountId = accountId;
@@ -414,10 +417,7 @@ function startValorantWatcher(accountId) {
                 // Verify the running Riot Client is authed as THIS account
                 // (prevents false positives from leftover Valorant from the previous account)
                 const auth = await authLaunchService.getAuthenticatedAccount();
-                if (!auth || auth.puuid !== accountId) {
-                    // Wrong account or not yet authed - wait more
-                    return;
-                }
+                if (!auth || auth.puuid !== accountId) return; // wrong account / not yet authed
                 valorantFound = true;
                 releaseLaunchLock();
                 queueSnapshot(accountId);
@@ -426,10 +426,10 @@ function startValorantWatcher(accountId) {
                 queueSnapshot(accountId);
                 sendStatus(accountId, 'closed');
                 stopValorantWatcher();
-            } else if (!valorantFound && !apiTried && checks >= 2) {
+            } else if (!valorantFound && !apiTried && checks >= WATCHER_API_LAUNCH_CHECK) {
                 apiTried = true;
                 authLaunchService.tryApiLaunch().catch(() => {});
-            } else if (!valorantFound && checks > 30) {
+            } else if (!valorantFound && checks > WATCHER_MAX_CHECKS) {
                 releaseLaunchLock();
                 sendStatus(accountId, 'closed');
                 stopValorantWatcher();
@@ -437,7 +437,7 @@ function startValorantWatcher(accountId) {
         } catch {
             if (checks > 10) { releaseLaunchLock(); sendStatus(accountId, 'closed'); stopValorantWatcher(); }
         }
-    }, 3000);
+    }, WATCHER_TICK_MS);
 }
 
 function stopValorantWatcher() {
