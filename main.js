@@ -19,6 +19,7 @@ let valorantProcessWatcher = null;
 
 function createWindow() {
     mainWindow = new BrowserWindow({
+        title: 'Nebula',
         width: 750, height: 700,
         resizable: false,
         maximizable: false,
@@ -53,7 +54,7 @@ function createWindow() {
 }
 
 function createTray() {
-    const iconPath = path.join(__dirname, 'assets/icon.ico');
+    const iconPath = path.join(__dirname, 'assets/icon.png');
     const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
     tray = new Tray(icon);
 
@@ -65,7 +66,7 @@ function createTray() {
 
     tray.setToolTip('Nebula - Valorant Account Manager');
     tray.setContextMenu(contextMenu);
-    tray.on('double-click', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
+    tray.on('click', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
 }
 
 function setupAutoUpdater() {

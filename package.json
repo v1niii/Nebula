@@ -32,6 +32,9 @@
   "build": {
     "appId": "com.v1niii.nebula",
     "productName": "Nebula",
+    "copyright": "Copyright © 2026 v1niii",
+    "compression": "maximum",
+    "artifactName": "${productName}-Setup-${version}.${ext}",
     "publish": [
       {
         "provider": "github",
@@ -46,30 +49,48 @@
       "auth-launch-service.js",
       "renderer/dist/**/*",
       "assets/**/*",
-      "node_modules/**/*"
+      "node_modules/**/*",
+      "!**/{.DS_Store,.gitignore,.github,.vscode,.idea,.editorconfig}",
+      "!**/{*.md,*.markdown,README*,CHANGELOG*,LICENSE*,readme*,license*}",
+      "!**/{test,tests,__tests__,spec,specs,example,examples}/**",
+      "!**/node_modules/**/*.d.ts",
+      "!**/node_modules/**/*.map"
     ],
     "directories": {
-      "buildResources": "assets"
+      "buildResources": "assets",
+      "output": "dist"
     },
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "requestedExecutionLevel": "asInvoker"
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
       "deleteAppDataOnUninstall": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Nebula",
+      "uninstallDisplayName": "${productName} ${version}",
+      "runAfterFinish": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "include": "build/installer.nsh",
+      "menuCategory": false
     },
     "mac": {
       "target": "dmg",
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.icns",
+      "category": "public.app-category.utilities"
     },
     "linux": {
       "target": "AppImage",
-      "icon": "assets"
+      "icon": "assets",
+      "category": "Game"
     }
   }
 }

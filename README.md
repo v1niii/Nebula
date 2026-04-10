@@ -20,6 +20,10 @@ A fast, secure Valorant account manager. Switch between accounts seamlessly.
 
 Download the latest `.exe` from [Releases](https://github.com/v1niii/Nebula/releases).
 
+> **Windows SmartScreen warning?** When you run the installer, Windows may show a blue "Windows protected your PC" screen. This is **normal** for any unsigned app — Nebula is open source and I don't pay for an EV code-signing certificate (~$300/year). The warning doesn't mean the app is unsafe; it just means Microsoft hasn't built up reputation for this publisher yet.
+>
+> **To bypass it:** click **More info** → **Run anyway**. You can also verify the installer by checking out the source code in this repo and building it yourself.
+
 ## Build from Source
 
 ```bash
