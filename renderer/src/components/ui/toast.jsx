@@ -50,7 +50,7 @@ export function ToastProvider({ children }) {
 
   const addToast = useCallback((message, type = 'info', duration = 3500) => {
     const id = Date.now() + Math.random()
-    setToasts(prev => [...prev.slice(-4), { id, message, type, duration }])
+    setToasts(prev => [...prev.slice(-2), { id, message, type, duration }])
   }, [])
 
   const dismiss = useCallback((id) => {
@@ -66,7 +66,7 @@ export function ToastProvider({ children }) {
   return (
     <ToastContext.Provider value={toast}>
       {children}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none">
+      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 w-[calc(100%-2rem)] max-w-[440px] pointer-events-none">
         {toasts.map(t => (
           <div key={t.id} className="pointer-events-auto">
             <Toast toast={t} onDismiss={dismiss} />

@@ -16,10 +16,10 @@ export function NicknameDialog({ open, onOpenChange, account, onSave }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>Set Nickname</DialogTitle>
-          <DialogDescription>Label for {account?.displayName || account?.username}</DialogDescription>
+          <DialogDescription>Set a label for {account?.displayName || account?.username}</DialogDescription>
         </DialogHeader>
         <div className="space-y-3 pt-2">
           <input
@@ -34,7 +34,7 @@ export function NicknameDialog({ open, onOpenChange, account, onSave }) {
           />
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => onOpenChange(false)} className="flex-1">Cancel</Button>
-            <Button onClick={handleSave} className="flex-1">Save</Button>
+            <Button onClick={handleSave} disabled={!value.trim()} className="flex-1">Save</Button>
           </div>
         </div>
       </DialogContent>

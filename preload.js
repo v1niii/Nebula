@@ -9,13 +9,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     removeAccount: (id) => ipcRenderer.invoke('remove-account', id),
     launchValorant: (id) => ipcRenderer.invoke('launch-valorant', id),
     copySettings: (fromId, toId) => ipcRenderer.invoke('copy-settings', fromId, toId),
+    copyCloudSettings: (fromId, toId) => ipcRenderer.invoke('copy-cloud-settings', fromId, toId),
     setNickname: (id, name) => ipcRenderer.invoke('set-nickname', id, name),
     reorderAccounts: (ids) => ipcRenderer.invoke('reorder-accounts', ids),
     checkSession: (id) => ipcRenderer.invoke('check-session', id),
 
     getSettings: () => ipcRenderer.invoke('get-settings'),
     saveSettings: (s) => ipcRenderer.invoke('save-settings', s),
-    selectValorantPath: () => ipcRenderer.invoke('select-valorant-path'),
     minimizeToTray: () => ipcRenderer.invoke('minimize-to-tray'),
     quitApp: () => ipcRenderer.invoke('quit-app'),
     onConfirmClose: (cb) => {

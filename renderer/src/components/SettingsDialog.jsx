@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { FolderOpen } from 'lucide-react'
+import { CheckCircle2, XCircle } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -10,7 +10,7 @@ import { useToast } from '@/components/ui/toast'
 
 export function SettingsDialog({ open, onOpenChange }) {
   const { theme, setTheme } = useTheme()
-  const [path, setPath] = useState('')
+  const [riotClientPath, setRiotClientPath] = useState('')
   const [localTheme, setLocalTheme] = useState(theme)
   const [autoLaunch, setAutoLaunch] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -19,25 +19,16 @@ export function SettingsDialog({ open, onOpenChange }) {
   useEffect(() => {
     if (open) {
       window.electronAPI.getSettings().then(s => {
-        setPath(s.valorantPath || '')
+        setRiotClientPath(s.riotClientPath || '')
         setLocalTheme(s.theme || 'system')
         setAutoLaunch(s.autoLaunchValorant !== false)
       })
     }
   }, [open])
 
-  const handleBrowse = async () => {
-    const result = await window.electronAPI.selectValorantPath()
-    if (result.success && result.path) {
-      setPath(result.path)
-    } else if (result.error) {
-      toast.error(result.error)
-    }
-  }
-
   const handleSave = async () => {
     setSaving(true)
-    const result = await window.electronAPI.saveSettings({ valorantPath: path, theme: localTheme, autoLaunchValorant: autoLaunch })
+    const result = await window.electronAPI.saveSettings({ theme: localTheme, autoLaunchValorant: autoLaunch })
     setSaving(false)
     if (result.success) {
       setTheme(localTheme)
@@ -48,7 +39,7 @@ export function SettingsDialog({ open, onOpenChange }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>Configure Nebula preferences.</DialogDescription>
@@ -56,20 +47,21 @@ export function SettingsDialog({ open, onOpenChange }) {
 
         <div className="space-y-4 pt-2">
           <div className="space-y-2">
-            <label className="text-sm font-medium">Riot Games Directory</label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                readOnly
-                value={path}
-                placeholder="Not set"
-                className="flex-1 h-9 px-3 rounded-md border bg-secondary/50 text-sm text-foreground truncate outline-none focus:ring-1 focus:ring-ring"
-              />
-              <Button variant="outline" size="sm" onClick={handleBrowse} className="gap-1.5 shrink-0">
-                <FolderOpen className="h-3.5 w-3.5" />
-                Browse
-              </Button>
+            <label className="text-sm font-medium">Riot Client</label>
+            <div className="flex items-center gap-2 h-9 px-3 rounded-md border bg-secondary/50 text-sm overflow-hidden">
+              {riotClientPath ? (
+                <>
+                  <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                  <span className="text-foreground truncate text-xs">{riotClientPath}</span>
+                </>
+              ) : (
+                <>
+                  <XCircle className="h-3.5 w-3.5 text-destructive shrink-0" />
+                  <span className="text-muted-foreground">Not detected. Install Riot Games.</span>
+                </>
+              )}
             </div>
+            <p className="text-xs text-muted-foreground">Auto-detected from Riot Games installation.</p>
           </div>
 
           <Separator />
@@ -93,7 +85,7 @@ export function SettingsDialog({ open, onOpenChange }) {
           <div className="flex items-center justify-between">
             <div>
               <label className="text-sm font-medium">Auto-Launch Valorant</label>
-              <p className="text-xs text-muted-foreground">Start Valorant automatically when launching an account</p>
+              <p className="text-xs text-muted-foreground">Start Valorant automatically when launching an account.</p>
             </div>
             <Switch checked={autoLaunch} onCheckedChange={setAutoLaunch} />
           </div>

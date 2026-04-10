@@ -1,5 +1,5 @@
-import { memo, useState } from 'react'
-import { Play, Trash2, Copy, Tag, GripVertical, ShieldCheck, ShieldAlert, Loader2, RefreshCw } from 'lucide-react'
+import { memo, useState, useEffect, useRef } from 'react'
+import { Play, Trash2, Monitor, Tag, GripVertical, ShieldCheck, Loader2, RefreshCw } from 'lucide-react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Button } from '@/components/ui/button'
@@ -12,47 +12,57 @@ import {
 
 function formatTime(ts) {
   if (!ts) return 'Never'
-  try { return new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(ts)) } catch { return 'Unknown' }
+  try { return new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(new Date(ts)) } catch { return '?' }
 }
 
 export const AccountCard = memo(function AccountCard({ account, launchStatus, onLaunch, onRemove, onCopySettings, onSetNickname, onCheckSession }) {
   const [sessionState, setSessionState] = useState(null)
   const toast = useToast()
+  const mountedRef = useRef(true)
   const isLaunching = launchStatus === 'launching'
   const isRunning = launchStatus === 'running'
-  const isExpired = sessionState === 'expired'
-  const disabled = isLaunching || isRunning || isExpired
+  const disabled = isLaunching || isRunning
+
+  useEffect(() => { return () => { mountedRef.current = false } }, [])
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: account.id })
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }
 
-  const displayName = account.nickname || account.displayName || account.username
-  const fullName = account.displayName || account.username || ''
+  const riotId = account.displayName || account.username || ''
+  const displayName = account.nickname ? `${riotId} (${account.nickname})` : riotId
 
-  const handleCheckSession = async () => {
-    setSessionState('checking')
-    try {
-      const result = await onCheckSession(account.id)
-      if (result.valid) {
-        setSessionState('valid')
-        toast.success(`Session active for ${displayName}`)
-        setTimeout(() => setSessionState(null), 8000)
-      } else {
-        setSessionState('expired')
-        toast.error(`${displayName}: Session expired. Re-login required.`)
-      }
-    } catch (e) {
-      setSessionState('expired')
-      toast.error(`${displayName}: Failed to check session.`)
+  const safeSetSession = (state, delayMs) => {
+    if (delayMs) {
+      setTimeout(() => { if (mountedRef.current) setSessionState(state) }, delayMs)
+    } else {
+      setSessionState(state)
     }
   }
 
-  const handleLaunch = (id) => {
-    if (isExpired) {
-      toast.error(`${displayName}: Session expired. Remove and re-add the account.`)
-      return
+  const handleCheckSession = async () => {
+    safeSetSession('checking')
+    try {
+      const result = await onCheckSession(account.id)
+      if (!mountedRef.current) return
+      if (result.valid) {
+        safeSetSession('valid')
+        toast.success(`Session active for ${riotId}`)
+        safeSetSession(null, 8000)
+      } else if (result.valid === null) {
+        safeSetSession('unknown')
+        toast.info(`${riotId}: ${result.reason}`)
+        safeSetSession(null, 8000)
+      } else {
+        safeSetSession('expired')
+        toast.error(`${riotId}: ${result.reason || 'Session expired.'}`)
+        safeSetSession(null, 15000)
+      }
+    } catch {
+      if (!mountedRef.current) return
+      safeSetSession('expired')
+      toast.error(`${riotId}: Failed to check session.`)
+      safeSetSession(null, 15000)
     }
-    onLaunch(id)
   }
 
   return (
@@ -63,16 +73,12 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, on
 
       <div className="flex-1 min-w-0 mr-2">
         <div className="flex items-center gap-2">
-          <p className="text-sm font-medium truncate" title={fullName}>
-            {displayName}
+          <p className="text-sm font-medium truncate" title={displayName}>
+            {riotId}
+            {account.nickname && <span className="text-muted-foreground font-normal"> ({account.nickname})</span>}
           </p>
-          {account.nickname && (
-            <span className="text-xs text-muted-foreground truncate hidden sm:inline" title={fullName}>
-              {fullName}
-            </span>
-          )}
         </div>
-        <div className="flex items-center gap-3 mt-0.5 h-4">
+        <div className="flex items-center gap-2 mt-0.5 h-4 whitespace-nowrap overflow-hidden">
           <span className="text-xs text-muted-foreground">{account.region || 'N/A'}</span>
           <span className="text-xs text-muted-foreground">{formatTime(account.lastUsed)}</span>
           <StatusIndicator status={launchStatus} />
@@ -80,10 +86,10 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, on
       </div>
 
       <div className="flex items-center gap-1">
-        {/* Session health - retry allowed even when expired */}
         <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity" onClick={handleCheckSession} disabled={sessionState === 'checking'} title="Check session health">
           {sessionState === 'checking' ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" /> :
            sessionState === 'valid' ? <ShieldCheck className="h-3.5 w-3.5 text-purple-500" /> :
+           sessionState === 'unknown' ? <ShieldCheck className="h-3.5 w-3.5 text-amber-500" /> :
            sessionState === 'expired' ? <RefreshCw className="h-3.5 w-3.5 text-destructive" /> :
            <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground" />}
         </Button>
@@ -92,13 +98,13 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, on
           <Tag className="h-3.5 w-3.5" />
         </Button>
 
-        <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground" onClick={() => onCopySettings(account)} title="Copy settings to this account">
-          <Copy className="h-3.5 w-3.5" />
+        <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground" onClick={() => onCopySettings(account)} title="Copy video settings to this account">
+          <Monitor className="h-3.5 w-3.5" />
         </Button>
 
-        <Button size="sm" onClick={() => handleLaunch(account.id)} disabled={disabled} className={`gap-1.5 ${isExpired ? 'opacity-50' : ''}`}>
-          {isExpired ? <ShieldAlert className="h-3 w-3" /> : <Play className="h-3 w-3" />}
-          {isExpired ? 'Expired' : isLaunching ? 'Launching' : isRunning ? 'Running' : 'Launch'}
+        <Button size="sm" onClick={() => onLaunch(account.id)} disabled={disabled} className="gap-1.5 min-w-[90px] justify-center">
+          <Play className="h-3 w-3" />
+          {isLaunching ? 'Launching' : isRunning ? 'Running' : 'Launch'}
         </Button>
 
         <AlertDialog>
@@ -110,7 +116,11 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, on
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Remove Account</AlertDialogTitle>
-              <AlertDialogDescription>Remove "{displayName}" from Nebula?</AlertDialogDescription>
+              <AlertDialogDescription>
+                Remove "<span className="text-purple-400 font-medium">{riotId}</span>"
+                {account.nickname ? <span className="text-muted-foreground"> ({account.nickname})</span> : null}
+                {' '}from Nebula? The saved session will be deleted.
+              </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>

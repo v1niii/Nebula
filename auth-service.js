@@ -1,12 +1,24 @@
 const fetch = require('node-fetch');
 const crypto = require('crypto');
 const https = require('https');
+const zlib = require('zlib');
 
 // Constants
 const AUTH_ENDPOINTS = {
   AUTHORIZE: 'https://auth.riotgames.com/authorize',
   ENTITLEMENTS: 'https://entitlements.auth.riotgames.com/api/token/v1',
   USERINFO: 'https://auth.riotgames.com/userinfo',
+};
+
+const RIOT_CLIENT_PLATFORM = Buffer.from(JSON.stringify({
+  platformType: 'PC', platformOS: 'Windows',
+  platformOSVersion: '10.0.19042.1.256.64bit', platformChipset: 'Unknown'
+})).toString('base64');
+
+// Region to SGP shard mapping for player-preferences
+const REGION_SGP_MAP = {
+  'NA': 'usw2', 'LATAM': 'usw2', 'BR': 'usw2',
+  'EU': 'euc1', 'AP': 'apse1', 'KR': 'apne1',
 };
 
 // TLS cipher suites that match the real Riot Client fingerprint (bypasses Cloudflare)
@@ -77,7 +89,7 @@ class AuthService {
   async storeCookiesSecurely(accountId, cookies) {
     if (!cookies || typeof cookies !== 'object') throw new Error('Invalid cookies.');
     const safe = this._getSafeStorage();
-    const data = { ssid: cookies.ssid, clid: cookies.clid, csid: cookies.csid, tdid: cookies.tdid, sub: cookies.sub || accountId };
+    const data = { ssid: cookies.ssid, clid: cookies.clid, csid: cookies.csid, tdid: cookies.tdid, sub: cookies.sub || accountId, asid: cookies.asid || '' };
     if (safe.isEncryptionAvailable()) {
       const encrypted = safe.encryptString(JSON.stringify(data));
       this.store.set(`secure.${accountId}`, encrypted.toString('base64'));
@@ -143,7 +155,8 @@ class AuthService {
       this._saveAccount(accountData);
       await this.storeCookiesSecurely(accountData.id, {
         ssid: cookies.ssid || '', clid: cookies.clid || '',
-        csid: cookies.csid || '', tdid: cookies.tdid || '', sub: accountData.id
+        csid: cookies.csid || '', tdid: cookies.tdid || '',
+        sub: accountData.id, asid: cookies.asid || ''
       });
 
       return { success: true, account: { ...accountData } };
@@ -152,29 +165,6 @@ class AuthService {
     }
   }
 
-  async addImportedAccount(accountData) {
-    if (!accountData?.id || !accountData?.cookies) throw new Error('Invalid imported account data.');
-
-    const metadata = {
-      id: accountData.id,
-      username: accountData.username || `Imported (${accountData.id.substring(0, 5)})`,
-      region: accountData.region || 'NA',
-      puuid: accountData.id,
-      displayName: accountData.username || `Imported (${accountData.id.substring(0, 5)})`,
-      nickname: '',
-      sortOrder: this.accounts.length,
-      lastUsed: Date.now(),
-      createdAt: Date.now()
-    };
-
-    this._saveAccount(metadata);
-    await this.storeCookiesSecurely(accountData.id, {
-      ssid: accountData.cookies.ssid, clid: accountData.cookies.clid || '',
-      csid: accountData.cookies.csid || '', tdid: accountData.cookies.tdid || '', sub: accountData.id
-    });
-
-    return { ...metadata };
-  }
 
   async removeAccount(accountId) {
     this.accounts = this.store.get('accounts', []);
@@ -226,13 +216,13 @@ class AuthService {
   // --- Session health ---
 
   async checkSession(accountId) {
+    return this.checkSessionWithCookies(accountId, await this.retrieveCookiesSecurely(accountId));
+  }
+
+  async checkSessionWithCookies(accountId, cookies) {
     try {
-      const cookies = await this.retrieveCookiesSecurely(accountId);
-      if (!cookies) return { valid: false, reason: 'No cookies stored.' };
-      if (!cookies.ssid) return { valid: false, reason: 'No SSID cookie. Re-login required.' };
-
+      if (!cookies?.ssid) return { valid: false, reason: 'No SSID cookie.' };
       const result = await this._performSSIDAuth(cookies.ssid, cookies.clid, cookies.csid, cookies.tdid);
-
       if (result.success) {
         await this.storeCookiesSecurely(accountId, {
           ssid: result.ssid, clid: result.clid || '', csid: result.csid || '',
@@ -240,9 +230,8 @@ class AuthService {
         });
         return { valid: true };
       }
-      return { valid: false, reason: result.message || 'Session expired.' };
+      return { valid: false, reason: result.message || 'Session expired (~1-3 weeks lifespan).' };
     } catch (e) {
-      console.error('Session check error:', e);
       return { valid: false, reason: e.message };
     }
   }
@@ -268,6 +257,82 @@ class AuthService {
     } catch (error) {
       return { success: false, error: error.message, needsRelogin: true };
     }
+  }
+
+  // --- Cloud Settings Auth (uses riot-client client_id for proper RBAC permissions) ---
+
+  async getCloudAuthTokens(ssid, clid, csid, tdid) {
+    const cookieMap = {};
+    if (ssid) cookieMap.ssid = ssid;
+    if (clid) cookieMap.clid = clid;
+    if (csid) cookieMap.csid = csid;
+    if (tdid) cookieMap.tdid = tdid;
+    if (!cookieMap.ssid) throw new Error('No SSID cookie.');
+
+    const build = await getRiotClientBuild();
+    const ua = `RiotClient/${build} rso-auth (Windows;10;;Professional, x64)`;
+    const nonce = crypto.randomBytes(16).toString('base64url');
+    const url = `${AUTH_ENDPOINTS.AUTHORIZE}?redirect_uri=http%3A%2F%2Flocalhost%2Fredirect&client_id=riot-client&response_type=token%20id_token&nonce=${nonce}&scope=openid%20link%20ban%20lol_region%20lol%20summoner%20offline_access`;
+
+    const response = await fetch(url, {
+      agent: riotAgent, redirect: 'manual',
+      headers: { 'User-Agent': ua, 'Cookie': this._formatCookies(cookieMap) },
+    });
+    const loc = response.headers.get('location');
+    if (!loc || !loc.includes('access_token')) throw new Error('Session expired. Launch the account first.');
+    const accessToken = new URLSearchParams(loc.split('#')[1]).get('access_token');
+
+    const entR = await fetch(AUTH_ENDPOINTS.ENTITLEMENTS, {
+      method: 'POST', agent: riotAgent,
+      headers: { 'User-Agent': ua, 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (!entR.ok) throw new Error('Entitlements failed.');
+    const { entitlements_token } = await entR.json();
+    return { accessToken, entitlementsToken: entitlements_token };
+  }
+
+  // --- Cloud Settings (via SGP player-preferences) ---
+
+  _getSgpPrefsUrl(region) {
+    const shard = REGION_SGP_MAP[(region || 'NA').toUpperCase()] || 'usw2';
+    return `https://player-preferences-${shard}.pp.sgp.pvp.net/playerPref/v3`;
+  }
+
+  async getCloudSettings(accessToken, entitlementsToken, region) {
+    const url = `${this._getSgpPrefsUrl(region)}/getPreference/Ares.PlayerSettings`;
+    const build = await getRiotClientBuild();
+    const res = await fetch(url, {
+      agent: riotAgent,
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'X-Riot-Entitlements-JWT': entitlementsToken,
+        'X-Riot-ClientPlatform': RIOT_CLIENT_PLATFORM,
+        'User-Agent': `RiotClient/${build} rso-auth (Windows;10;;Professional, x64)`,
+      },
+    });
+    if (!res.ok) throw new Error(`Failed to get settings: ${res.status}`);
+    const body = await res.json();
+    if (!body.data) throw new Error('No settings data returned.');
+    return body;
+  }
+
+  async putCloudSettings(accessToken, entitlementsToken, region, settingsBlob) {
+    const url = `${this._getSgpPrefsUrl(region)}/savePreference`;
+    const build = await getRiotClientBuild();
+    const res = await fetch(url, {
+      method: 'PUT', agent: riotAgent,
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'X-Riot-Entitlements-JWT': entitlementsToken,
+        'X-Riot-ClientPlatform': RIOT_CLIENT_PLATFORM,
+        'Content-Type': 'application/json',
+        'User-Agent': `RiotClient/${build} rso-auth (Windows;10;;Professional, x64)`,
+      },
+      body: JSON.stringify({ type: 'Ares.PlayerSettings', data: settingsBlob.data }),
+    });
+    if (!res.ok) throw new Error(`Failed to save settings: ${res.status}`);
+    return res.json();
   }
 
   // --- Private helpers ---

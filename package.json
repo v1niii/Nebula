@@ -1,6 +1,6 @@
 {
   "name": "nebula",
-  "version": "2.0.1",
+  "version": "3.0.0",
   "description": "Manage multiple Valorant accounts easily.",
   "main": "main.js",
   "scripts": {
@@ -16,7 +16,7 @@
     "manager",
     "electron"
   ],
-  "author": "Your Name/AI",
+  "author": "v1niii",
   "license": "MIT",
   "dependencies": {
     "electron-store": "^8.1.0",

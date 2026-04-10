@@ -1,8 +1,11 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, session, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
-const crypto = require('crypto');
 const store = require('electron-store');
+
+// Set app name and model ID so Windows shows "Nebula" in taskbar/task manager
+app.setName('Nebula');
+if (process.platform === 'win32') app.setAppUserModelId('com.v1niii.nebula');
 const { AuthService } = require('./auth-service');
 const { AuthLaunchService } = require('./auth-launch-service');
 
@@ -16,8 +19,10 @@ let valorantProcessWatcher = null;
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 900, height: 650, minWidth: 480, minHeight: 400,
-        autoHideMenuBar: true, show: false,
+        width: 500, height: 700,
+        resizable: false,
+        maximizable: false,
+        autoHideMenuBar: true, show: false, center: true,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true, nodeIntegration: false,
@@ -25,7 +30,6 @@ function createWindow() {
         icon: path.join(__dirname, 'assets/icon.ico')
     });
 
-    mainWindow.maximize();
     mainWindow.show();
 
     if (process.env.NODE_ENV === 'development') {
@@ -85,108 +89,21 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => { app.isQuitting = true; });
 
-// Scrub plaintext auth files on quit
-app.on('will-quit', () => {
-    try {
-        const fs = require('fs');
-        const yaml = require('yaml');
-        const base = path.join(process.env.LOCALAPPDATA, 'Riot Games');
-        const emptyYaml = yaml.stringify({ private: { 'riot-login': { persist: { session: { cookies: [] } } } } });
-        for (const sub of ['Riot Client/Data', 'Beta/Data']) {
-            const file = path.join(base, sub, 'RiotGamesPrivateSettings.yaml');
-            if (fs.existsSync(file)) fs.writeFileSync(file, emptyYaml, 'utf-8');
-        }
-    } catch (e) { /* best effort */ }
-});
+// No longer need to scrub YAML on quit - snapshot/restore handles auth state
 
 // --- Account IPC ---
 
 ipcMain.handle('get-accounts', () => authService.getAccounts());
 
+// Login via Riot Client: launches the actual Riot Client for the user to log in,
+// then snapshots the auth files for future account switching
 ipcMain.handle('login-with-riot', async () => {
-    return new Promise((resolve) => {
-        const authPartition = `riot-auth-${Date.now()}`;
-        const authSession = session.fromPartition(authPartition);
-        const nonce = crypto.randomBytes(16).toString('base64url');
-
-        const authWindow = new BrowserWindow({
-            width: 500, height: 750, parent: mainWindow, modal: true,
-            webPreferences: { nodeIntegration: false, contextIsolation: true, session: authSession }
-        });
-        authWindow.setMenuBarVisibility(false);
-        authWindow.setAutoHideMenuBar(true);
-
-        const ALLOWED_DOMAINS = ['auth.riotgames.com', 'authenticate.riotgames.com', 'playvalorant.com', 'account.riotgames.com'];
-        authWindow.webContents.on('will-navigate', (event, url) => {
-            try {
-                const hostname = new URL(url).hostname;
-                if (!ALLOWED_DOMAINS.some(d => hostname === d || hostname.endsWith('.' + d))) event.preventDefault();
-            } catch { event.preventDefault(); }
-        });
-
-        authSession.cookies.set({ url: 'https://auth.riotgames.com', name: 'riotgames.cookie-policy', value: 'accept' }).catch(() => {});
-        authWindow.webContents.on('dom-ready', () => {
-            authWindow.webContents.insertCSS(`
-                .cookie-banner, .cookie-policy, [class*="cookie"], [id*="cookie"],
-                .osano-cm-window, .osano-cm-dialog, #onetrust-consent-sdk,
-                [class*="consent"], [id*="consent-banner"] { display: none !important; }
-            `).catch(() => {});
-        });
-
-        authWindow.loadURL(`https://auth.riotgames.com/authorize?redirect_uri=https%3A%2F%2Fplayvalorant.com%2Fopt_in&client_id=play-valorant-web-prod&response_type=token%20id_token&nonce=${nonce}&scope=account%20openid`);
-
-        let resolved = false;
-        const finishWithTokens = async (accessToken, idToken) => {
-            if (resolved) return;
-            resolved = true;
-            // Get cookies from both auth.riotgames.com and .riotgames.com (tdid lives on parent domain)
-            const [authCookies, rootCookies] = await Promise.all([
-                authSession.cookies.get({ domain: 'auth.riotgames.com' }),
-                authSession.cookies.get({ domain: 'riotgames.com' }),
-            ]);
-            const cookies = {};
-            [...rootCookies, ...authCookies].forEach(c => { cookies[c.name] = c.value; });
-            await authSession.clearStorageData();
-            await authSession.clearCache();
-            try { authWindow.close(); } catch (e) {}
-            resolve(await authService.addAccountFromTokens(accessToken, idToken, cookies));
-        };
-
-        const parseTokens = (url) => {
-            const i = url.indexOf('#');
-            if (i === -1) return null;
-            const p = new URLSearchParams(url.substring(i + 1));
-            const at = p.get('access_token');
-            return at ? { accessToken: at, idToken: p.get('id_token') || '' } : null;
-        };
-
-        authWindow.webContents.on('will-redirect', (event, url) => {
-            if (resolved) return;
-            const tokens = parseTokens(url);
-            if (tokens) { event.preventDefault(); finishWithTokens(tokens.accessToken, tokens.idToken); }
-        });
-        const tryExtract = async () => {
-            if (resolved) return;
-            try {
-                const hash = await authWindow.webContents.executeJavaScript('window.location.hash');
-                if (hash?.includes('access_token')) {
-                    const p = new URLSearchParams(hash.substring(1));
-                    const at = p.get('access_token');
-                    if (at) finishWithTokens(at, p.get('id_token') || '');
-                }
-            } catch (e) {}
-        };
-        authWindow.webContents.on('did-navigate', tryExtract);
-        authWindow.webContents.on('did-finish-load', tryExtract);
-        authWindow.webContents.on('did-navigate-in-page', tryExtract);
-
-        const loginTimeout = setTimeout(() => { if (!resolved) try { authWindow.close(); } catch (e) {} }, 5 * 60 * 1000);
-        authWindow.on('closed', async () => {
-            clearTimeout(loginTimeout);
-            try { await authSession.clearStorageData(); await authSession.clearCache(); } catch (e) {}
-            if (!resolved) { resolved = true; resolve({ success: false, error: 'Login window was closed.' }); }
-        });
-    });
+    try {
+        const account = await authLaunchService.addViaRiotClient();
+        return { success: true, account };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
 });
 
 ipcMain.handle('import-current-account', async () => {
@@ -199,8 +116,11 @@ ipcMain.handle('import-current-account', async () => {
 });
 
 ipcMain.handle('remove-account', async (event, accountId) => {
-    try { await authService.removeAccount(accountId); return { success: true }; }
-    catch (error) { return { success: false, error: error.message }; }
+    try {
+        await authService.removeAccount(accountId);
+        await authLaunchService.deleteSnapshot(accountId);
+        return { success: true };
+    } catch (error) { return { success: false, error: error.message }; }
 });
 
 ipcMain.handle('set-nickname', async (event, accountId, nickname) => {
@@ -212,39 +132,57 @@ ipcMain.handle('reorder-accounts', async (event, orderedIds) => {
 });
 
 ipcMain.handle('check-session', async (event, accountId) => {
-    return authService.checkSession(accountId);
+    // Check if Riot Client is running and authed as this account
+    const auth = await authLaunchService.getAuthenticatedAccount();
+    if (auth && auth.puuid === accountId) return { valid: true };
+    // Try stored cookies
+    const result = await authService.checkSession(accountId);
+    if (result.valid) return result;
+    // Fallback to snapshot cookies
+    const snapCookies = await authLaunchService.extractCookiesFromSnapshot(accountId);
+    if (snapCookies?.ssid) return authService.checkSessionWithCookies(accountId, snapCookies);
+    return result;
 });
 
+let launchInProgress = false;
+function releaseLaunchLock() { launchInProgress = false; }
+
 ipcMain.handle('launch-valorant', async (event, accountId) => {
+    if (launchInProgress) return { success: false, error: 'A launch is already in progress. Please wait.' };
+    launchInProgress = true;
     if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'launching');
     try {
         const account = authService.getAccountById(accountId);
-        const cookies = await authService.retrieveCookiesSecurely(accountId);
-        if (!account || !cookies?.ssid) {
-            if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'error', 'Account data or cookies missing.');
-            return { success: false, error: 'Account data or cookies missing.' };
-        }
-
-        const valorantPath = appStore.get('valorantPath');
-        const riotClientExists = await authLaunchService.getRiotClientPath();
-        if (!valorantPath || !riotClientExists) {
-            if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'error', 'Riot Client not configured.');
-            return { success: false, error: 'Riot Client path not set. Configure it in settings.' };
+        if (!account) {
+            releaseLaunchLock();
+            if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'error', 'Account not found.');
+            return { success: false, error: 'Account not found.' };
         }
 
         const autoLaunch = appStore.get('autoLaunchValorant', true);
-        await authLaunchService.launchValorant(account, cookies, autoLaunch);
+        const result = await authLaunchService.launchValorant(account, autoLaunch);
+
+        if (result.sessionExpired) {
+            if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'error', 'Session expired');
+            authLaunchService.handleReLogin(accountId).then(() => {
+                authService.updateLastUsed(accountId);
+                releaseLaunchLock();
+                if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'idle');
+            }).catch(() => { releaseLaunchLock(); });
+            return { success: false, error: 'Session expired. Please log in via the Riot Client — session will be saved automatically.', sessionExpired: true };
+        }
+
         await authService.updateLastUsed(accountId);
         if (autoLaunch) {
             startValorantWatcher(accountId);
+            // Lock releases when watcher detects Valorant running or gives up
         } else {
-            // No Valorant to watch - just mark as closed after Riot Client opens
-            setTimeout(() => {
-                if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'closed');
-            }, 3000);
+            setTimeout(() => sendStatus(accountId, 'closed'), 3000);
+            releaseLaunchLock();
         }
         return { success: true };
     } catch (error) {
+        releaseLaunchLock();
         if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'error', error.message);
         return { success: false, error: error.message };
     }
@@ -253,31 +191,57 @@ ipcMain.handle('launch-valorant', async (event, accountId) => {
 ipcMain.handle('copy-settings', async (event, fromId, toId) => {
     try {
         const result = await authLaunchService.copyGameSettings(fromId, toId);
-        return { success: true, copied: result.copied };
+        return { success: true, copied: result.copied, method: 'local' };
+    } catch (error) { return { success: false, error: error.message }; }
+});
+
+ipcMain.handle('copy-cloud-settings', async (event, fromId, toId) => {
+    try {
+        const fromAcc = authService.getAccountById(fromId);
+        const toAcc = authService.getAccountById(toId);
+        if (!fromAcc || !toAcc) throw new Error('Account not found.');
+
+        const getCookies = async (accountId) => {
+            const stored = await authService.retrieveCookiesSecurely(accountId);
+            if (stored?.ssid) return stored;
+            const snap = await authLaunchService.extractCookiesFromSnapshot(accountId);
+            if (snap?.ssid) return snap;
+            return null;
+        };
+
+        const srcCookies = await getCookies(fromId);
+        if (!srcCookies?.ssid) throw new Error('Source account session not found. Launch it first.');
+        const dstCookies = await getCookies(toId);
+        if (!dstCookies?.ssid) throw new Error('Target account session not found. Launch it first.');
+
+        const srcAuth = await authService.getCloudAuthTokens(srcCookies.ssid, srcCookies.clid, srcCookies.csid, srcCookies.tdid);
+        const dstAuth = await authService.getCloudAuthTokens(dstCookies.ssid, dstCookies.clid, dstCookies.csid, dstCookies.tdid);
+
+        // Copy cloud settings (crosshair, sens, keybinds)
+        const settings = await authService.getCloudSettings(srcAuth.accessToken, srcAuth.entitlementsToken, fromAcc.region);
+        await authService.putCloudSettings(dstAuth.accessToken, dstAuth.entitlementsToken, toAcc.region, settings);
+
+        // Also copy local .ini files (catches settings like scoped sensitivity that cloud misses)
+        try { await authLaunchService.copyGameSettings(fromId, toId); } catch {}
+
+        return { success: true };
     } catch (error) { return { success: false, error: error.message }; }
 });
 
 // --- Settings IPC ---
 
-ipcMain.handle('get-settings', () => {
-    let valorantPath = appStore.get('valorantPath');
-    if (!valorantPath) {
-        const defaultPath = 'C:\\Riot Games';
-        const fs = require('fs');
-        if (fs.existsSync(defaultPath)) {
-            appStore.set('valorantPath', defaultPath);
-            valorantPath = defaultPath;
-        }
-    }
+ipcMain.handle('get-settings', async () => {
+    // Auto-detect Riot Client path (this is the source of truth, not user-selected)
+    let riotClientPath = '';
+    try { riotClientPath = await authLaunchService.getRiotClientPath(); } catch {}
     return {
-        valorantPath,
+        riotClientPath,
         theme: appStore.get('theme', 'system'),
         autoLaunchValorant: appStore.get('autoLaunchValorant', true),
     };
 });
 
 ipcMain.handle('save-settings', async (event, settings) => {
-    if (settings.valorantPath) appStore.set('valorantPath', settings.valorantPath);
     if (settings.theme) {
         appStore.set('theme', settings.theme);
         if (mainWindow) mainWindow.webContents.send('apply-theme', settings.theme);
@@ -288,15 +252,7 @@ ipcMain.handle('save-settings', async (event, settings) => {
     return { success: true };
 });
 
-ipcMain.handle('select-valorant-path', async () => {
-    const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'], title: 'Select Riot Games Installation Directory' });
-    if (!result.canceled && result.filePaths.length > 0) {
-        const riotPath = await authLaunchService.getRiotClientPath();
-        if (riotPath) { appStore.set('valorantPath', result.filePaths[0]); return { success: true, path: result.filePaths[0] }; }
-        return { success: false, error: 'No valid Riot Client found.' };
-    }
-    return { success: false };
-});
+// select-valorant-path removed: Riot Client is auto-detected from ProgramData/RiotClientInstalls.json
 
 ipcMain.handle('minimize-to-tray', () => {
     if (mainWindow) mainWindow.hide();
@@ -313,19 +269,45 @@ ipcMain.handle('open-external-link', (event, url) => {
 
 // --- Watcher ---
 
+function sendStatus(accountId, status, message) {
+    if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, status, message);
+    // Auto-clear closed/error states after a few seconds
+    if (status === 'closed' || status === 'error') {
+        setTimeout(() => {
+            if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'idle');
+        }, status === 'error' ? 8000 : 5000);
+    }
+}
+
 function startValorantWatcher(accountId) {
     stopValorantWatcher();
-    let found = false, errors = 0;
+    let valorantFound = false, checks = 0, apiTried = false;
     valorantProcessWatcher = setInterval(async () => {
+        checks++;
         try {
-            const running = await authLaunchService.isValorantRunning();
-            errors = 0;
-            if (running && !found) { found = true; if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'running'); }
-            else if (!running && found) { if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'closed'); stopValorantWatcher(); }
-        } catch (e) {
-            if (++errors >= 5) { if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'error', 'Monitoring failed.'); stopValorantWatcher(); }
+            const valRunning = await authLaunchService.isValorantRunning();
+
+            if (valRunning && !valorantFound) {
+                valorantFound = true;
+                releaseLaunchLock();
+                authLaunchService.snapshotAccountData(accountId).catch(() => {});
+                sendStatus(accountId, 'running');
+            } else if (!valRunning && valorantFound) {
+                authLaunchService.snapshotAccountData(accountId).catch(() => {});
+                sendStatus(accountId, 'closed');
+                stopValorantWatcher();
+            } else if (!valorantFound && !apiTried && checks >= 2) {
+                apiTried = true;
+                authLaunchService.tryApiLaunch().catch(() => {});
+            } else if (!valorantFound && checks > 30) {
+                releaseLaunchLock();
+                sendStatus(accountId, 'closed');
+                stopValorantWatcher();
+            }
+        } catch {
+            if (checks > 10) { releaseLaunchLock(); sendStatus(accountId, 'closed'); stopValorantWatcher(); }
         }
-    }, 5000);
+    }, 3000);
 }
 
 function stopValorantWatcher() {

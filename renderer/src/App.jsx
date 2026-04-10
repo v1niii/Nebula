@@ -24,9 +24,8 @@ function AppContent() {
   useEffect(() => {
     fetchAccounts()
     window.electronAPI.getSettings().then(s => {
-      if (!s.valorantPath) {
-        toast.error('Riot Games folder not found. Please set it in Settings.')
-        setSettingsOpen(true)
+      if (!s.riotClientPath) {
+        toast.error('Riot Client not found. Make sure Riot Games is installed.')
       }
     })
   }, [fetchAccounts]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -44,6 +43,15 @@ function AppContent() {
     setAppStatus('Ready')
     return result
   }, [importAccount])
+
+  // Reset footer when launch status changes
+  useEffect(() => {
+    const vals = Object.values(statuses)
+    const anyLaunching = vals.some(s => s.status === 'launching')
+    const anyRunning = vals.some(s => s.status === 'running')
+    if (anyRunning) setAppStatus('Valorant running')
+    else if (!anyLaunching && (appStatus === 'Launching...' || appStatus === 'Valorant running')) setAppStatus('Ready')
+  }, [statuses, appStatus])
 
   const handleLaunch = useCallback(async (accountId) => {
     setStatus(accountId, 'launching')
@@ -71,11 +79,11 @@ function AppContent() {
   }, [reorderAccounts])
 
   return (
-    <div className="min-h-screen p-4 sm:p-6 lg:p-8 flex items-start justify-center">
-      <div className="w-full max-w-2xl flex flex-col animate-fade-in">
+    <div className="h-screen overflow-hidden p-4 flex flex-col">
+      <div className="w-full flex flex-col flex-1 min-h-0 animate-fade-in">
         <Header onOpenSettings={() => setSettingsOpen(true)} />
 
-        <div className="space-y-4 flex-1">
+        <div className="space-y-4 flex-1 min-h-0 overflow-hidden">
           <AccountList
             accounts={accounts}
             loading={loading}

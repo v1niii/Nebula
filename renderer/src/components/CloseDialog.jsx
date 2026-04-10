@@ -12,7 +12,7 @@ export function CloseDialog() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="sm:max-w-xs">
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>Close Nebula</DialogTitle>
           <DialogDescription>Keep running in the background or quit completely?</DialogDescription>

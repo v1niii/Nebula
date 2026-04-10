@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { LogIn, Download } from 'lucide-react'
+import { LogIn, Download, Info } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
@@ -15,7 +15,7 @@ export function AddAccountSection({ onLogin, onImport }) {
     try {
       const result = await onLogin()
       if (result?.success) {
-        toast.success(`${result.account?.displayName || result.account?.username || 'Account'} added (${result.account?.region}).`)
+        toast.success(`${result.account?.displayName || result.account?.username || 'Account'} added · ${result.account?.region}`)
       } else if (result?.error) {
         toast.error(result.error)
       }
@@ -31,7 +31,7 @@ export function AddAccountSection({ onLogin, onImport }) {
     try {
       const result = await onImport()
       if (result?.success) {
-        toast.success(`${result.account?.displayName || result.account?.username || 'Account'} imported.`)
+        toast.success(`${result.account?.displayName || result.account?.username || 'Account'} imported · ${result.account?.region}`)
       } else if (result?.error) {
         toast.error(result.error)
       }
@@ -46,12 +46,19 @@ export function AddAccountSection({ onLogin, onImport }) {
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-medium">Add Account</CardTitle>
-        <CardDescription>Sign in with your Riot account or import an active session.</CardDescription>
+        <CardDescription>Opens the Riot Client to log in, or captures from a running session.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
+        <div className="flex items-start gap-2 rounded-md border border-purple-300/50 bg-purple-500/10 px-3 py-2">
+          <Info className="h-3.5 w-3.5 text-purple-400 mt-0.5 shrink-0" />
+          <p className="text-xs text-purple-300">
+            <span className="font-semibold">Always check "Stay signed in"</span> when logging in. Sessions last ~1-3 weeks.
+          </p>
+        </div>
+
         <Button onClick={handleLogin} disabled={loginLoading} className="w-full gap-1.5">
           <LogIn className="h-3.5 w-3.5" />
-          {loginLoading ? 'Opening...' : 'Login with Riot'}
+          {loginLoading ? 'Waiting for Riot Client login...' : 'Add Account'}
         </Button>
 
         <div className="flex items-center gap-3">
