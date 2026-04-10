@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Copy, Monitor } from 'lucide-react'
+import { Copy, Monitor, ArrowRightLeft, ArrowDown } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -44,7 +44,10 @@ export function CopySettingsDialog({ open, onOpenChange, targetAccount, accounts
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Copy Settings</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <ArrowRightLeft className="h-4 w-4" />
+            Copy Settings
+          </DialogTitle>
           <DialogDescription>
             Copy settings to <strong>{targetAccount?.displayName || targetAccount?.username}</strong>{targetAccount?.nickname ? ` (${targetAccount.nickname})` : ''}.
           </DialogDescription>
@@ -52,7 +55,10 @@ export function CopySettingsDialog({ open, onOpenChange, targetAccount, accounts
 
         <div className="space-y-4 pt-2">
           <div className="space-y-2">
-            <label className="text-sm font-medium">Copy from</label>
+            <label className="text-sm font-medium flex items-center gap-1.5">
+              <ArrowDown className="h-3.5 w-3.5 text-muted-foreground" />
+              Copy from
+            </label>
             <Select value={sourceId} onValueChange={setSourceId}>
               <SelectTrigger>
                 <SelectValue placeholder="Select account..." />

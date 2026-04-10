@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { MinusCircle, LogOut } from 'lucide-react'
+import { MinusCircle, LogOut, Power } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 
@@ -14,7 +14,10 @@ export function CloseDialog() {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Close Nebula</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <Power className="h-4 w-4" />
+            Close Nebula
+          </DialogTitle>
           <DialogDescription>Keep running in the background or quit completely?</DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-2 pt-2">

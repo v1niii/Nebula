@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { CheckCircle2, XCircle } from 'lucide-react'
+import { CheckCircle2, XCircle, Settings2, FolderCog, Palette, Rocket, Sun, Moon, Monitor, Save } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -41,13 +41,19 @@ export function SettingsDialog({ open, onOpenChange }) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Settings</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <Settings2 className="h-4 w-4" />
+            Settings
+          </DialogTitle>
           <DialogDescription>Configure Nebula preferences.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 pt-2">
           <div className="space-y-2">
-            <label className="text-sm font-medium">Riot Client</label>
+            <label className="text-sm font-medium flex items-center gap-1.5">
+              <FolderCog className="h-3.5 w-3.5 text-muted-foreground" />
+              Riot Client
+            </label>
             <div className="flex items-center gap-2 h-9 px-3 rounded-md border bg-secondary/50 text-sm overflow-hidden">
               {riotClientPath ? (
                 <>
@@ -67,30 +73,39 @@ export function SettingsDialog({ open, onOpenChange }) {
           <Separator />
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Theme</label>
+            <label className="text-sm font-medium flex items-center gap-1.5">
+              <Palette className="h-3.5 w-3.5 text-muted-foreground" />
+              Theme
+            </label>
             <Select value={localTheme} onValueChange={setLocalTheme}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="system">System</SelectItem>
-                <SelectItem value="light">Light</SelectItem>
-                <SelectItem value="dark">Dark</SelectItem>
+                <SelectItem value="system"><span className="flex items-center gap-2"><Monitor className="h-3.5 w-3.5" />System</span></SelectItem>
+                <SelectItem value="light"><span className="flex items-center gap-2"><Sun className="h-3.5 w-3.5" />Light</span></SelectItem>
+                <SelectItem value="dark"><span className="flex items-center gap-2"><Moon className="h-3.5 w-3.5" />Dark</span></SelectItem>
               </SelectContent>
             </Select>
           </div>
 
           <Separator />
 
-          <div className="flex items-center justify-between">
-            <div>
-              <label className="text-sm font-medium">Auto-Launch Valorant</label>
-              <p className="text-xs text-muted-foreground">Start Valorant automatically when launching an account.</p>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-start gap-2 flex-1">
+              <Rocket className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
+              <div>
+                <label className="text-sm font-medium">Auto-Launch Valorant</label>
+                <p className="text-xs text-muted-foreground">Start Valorant automatically when launching an account.</p>
+              </div>
             </div>
             <Switch checked={autoLaunch} onCheckedChange={setAutoLaunch} />
           </div>
 
-          <Button onClick={handleSave} disabled={saving} className="w-full">{saving ? 'Saving...' : 'Save'}</Button>
+          <Button onClick={handleSave} disabled={saving} className="w-full gap-1.5">
+            <Save className="h-3.5 w-3.5" />
+            {saving ? 'Saving...' : 'Save'}
+          </Button>
         </div>
       </DialogContent>
     </Dialog>

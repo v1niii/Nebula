@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Tag } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 
@@ -18,7 +19,10 @@ export function NicknameDialog({ open, onOpenChange, account, onSave }) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Set Nickname</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <Tag className="h-4 w-4" />
+            Set Nickname
+          </DialogTitle>
           <DialogDescription>Set a label for {account?.displayName || account?.username}</DialogDescription>
         </DialogHeader>
         <div className="space-y-3 pt-2">

@@ -28,6 +28,18 @@ function AppContent() {
         toast.error('Riot Client not found. Make sure Riot Games is installed.')
       }
     })
+
+    // Auto-updater notifications
+    window.electronAPI.onUpdateStatus?.((info) => {
+      if (info.type === 'available') {
+        toast.info(`Update available: v${info.version}. Downloading...`)
+      } else if (info.type === 'downloaded') {
+        toast.success(`Update v${info.version} ready. Restart to install.`, {
+          duration: 0,
+          action: { label: 'Restart now', onClick: () => window.electronAPI.installUpdateNow() },
+        })
+      }
+    })
   }, [fetchAccounts]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleLogin = useCallback(async () => {
@@ -83,19 +95,23 @@ function AppContent() {
       <div className="w-full flex flex-col flex-1 min-h-0 animate-fade-in">
         <Header onOpenSettings={() => setSettingsOpen(true)} />
 
-        <div className="space-y-4 flex-1 min-h-0 overflow-hidden">
-          <AccountList
-            accounts={accounts}
-            loading={loading}
-            statuses={statuses}
-            onLaunch={handleLaunch}
-            onRemove={handleRemove}
-            onCopySettings={setCopyTarget}
-            onSetNickname={setNicknameTarget}
-            onCheckSession={checkSession}
-            onReorder={handleReorder}
-          />
-          <AddAccountSection onLogin={handleLogin} onImport={handleImport} />
+        <div className="flex-1 min-h-0 flex flex-col gap-4">
+          <div className="flex-1 min-h-0">
+            <AccountList
+              accounts={accounts}
+              loading={loading}
+              statuses={statuses}
+              onLaunch={handleLaunch}
+              onRemove={handleRemove}
+              onCopySettings={setCopyTarget}
+              onSetNickname={setNicknameTarget}
+              onCheckSession={checkSession}
+              onReorder={handleReorder}
+            />
+          </div>
+          <div className="shrink-0">
+            <AddAccountSection onLogin={handleLogin} onImport={handleImport} />
+          </div>
         </div>
 
         <Footer status={appStatus} />

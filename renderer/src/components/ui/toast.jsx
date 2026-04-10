@@ -20,13 +20,17 @@ function Toast({ toast, onDismiss }) {
   const [exiting, setExiting] = useState(false)
   const Icon = icons[toast.type] || icons.info
 
+  const close = useCallback(() => {
+    setExiting(true)
+    setTimeout(() => onDismiss(toast.id), 200)
+  }, [onDismiss, toast.id])
+
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setExiting(true)
-      setTimeout(() => onDismiss(toast.id), 200)
-    }, toast.duration || 3500)
+    // duration of 0 means persistent (no auto-dismiss)
+    if (toast.duration === 0) return
+    const timer = setTimeout(close, toast.duration || 3500)
     return () => clearTimeout(timer)
-  }, [toast, onDismiss])
+  }, [toast, close])
 
   return (
     <div
@@ -38,7 +42,15 @@ function Toast({ toast, onDismiss }) {
     >
       <Icon className="h-4 w-4 mt-0.5 shrink-0" />
       <p className="flex-1 leading-snug">{toast.message}</p>
-      <button onClick={() => { setExiting(true); setTimeout(() => onDismiss(toast.id), 200) }} className="shrink-0 opacity-50 hover:opacity-100 transition-opacity">
+      {toast.action && (
+        <button
+          onClick={() => { toast.action.onClick(); close() }}
+          className="shrink-0 px-2 py-0.5 rounded text-xs font-medium bg-current/10 hover:bg-current/20 transition-colors"
+        >
+          {toast.action.label}
+        </button>
+      )}
+      <button onClick={close} className="shrink-0 opacity-50 hover:opacity-100 transition-opacity">
         <X className="h-3.5 w-3.5" />
       </button>
     </div>
@@ -48,9 +60,10 @@ function Toast({ toast, onDismiss }) {
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([])
 
-  const addToast = useCallback((message, type = 'info', duration = 3500) => {
+  const addToast = useCallback((message, type = 'info', options = {}) => {
     const id = Date.now() + Math.random()
-    setToasts(prev => [...prev.slice(-2), { id, message, type, duration }])
+    const { duration, action } = typeof options === 'number' ? { duration: options } : options
+    setToasts(prev => [...prev.slice(-2), { id, message, type, duration, action }])
   }, [])
 
   const dismiss = useCallback((id) => {
@@ -58,17 +71,17 @@ export function ToastProvider({ children }) {
   }, [])
 
   const toast = useMemo(() => ({
-    success: (msg) => addToast(msg, 'success'),
-    error: (msg) => addToast(msg, 'error', 5000),
-    info: (msg) => addToast(msg, 'info'),
+    success: (msg, opts) => addToast(msg, 'success', opts),
+    error: (msg, opts) => addToast(msg, 'error', opts ?? 5000),
+    info: (msg, opts) => addToast(msg, 'info', opts),
   }), [addToast])
 
   return (
     <ToastContext.Provider value={toast}>
       {children}
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 w-[calc(100%-2rem)] max-w-[600px] pointer-events-none">
+      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2 max-w-[calc(100%-2rem)] pointer-events-none">
         {toasts.map(t => (
-          <div key={t.id} className="pointer-events-auto">
+          <div key={t.id} className="pointer-events-auto max-w-full">
             <Toast toast={t} onDismiss={dismiss} />
           </div>
         ))}

@@ -1,8 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-const listeners = { 'update-launch-status': null, 'apply-theme': null, 'confirm-close': null };
+const listeners = { 'update-launch-status': null, 'apply-theme': null, 'confirm-close': null, 'update-status': null };
 
 contextBridge.exposeInMainWorld('electronAPI', {
+    getAppVersion: () => ipcRenderer.invoke('get-app-version'),
     getAccounts: () => ipcRenderer.invoke('get-accounts'),
     loginWithRiot: () => ipcRenderer.invoke('login-with-riot'),
     importCurrentAccount: () => ipcRenderer.invoke('import-current-account'),
@@ -25,6 +26,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('confirm-close', wrapped);
     },
     openExternalLink: (url) => ipcRenderer.invoke('open-external-link', url),
+
+    installUpdateNow: () => ipcRenderer.invoke('install-update-now'),
+    onUpdateStatus: (cb) => {
+        if (listeners['update-status']) ipcRenderer.removeListener('update-status', listeners['update-status']);
+        const wrapped = (_e, info) => cb(info);
+        listeners['update-status'] = wrapped;
+        ipcRenderer.on('update-status', wrapped);
+    },
 
     onUpdateLaunchStatus: (cb) => {
         if (listeners['update-launch-status']) ipcRenderer.removeListener('update-launch-status', listeners['update-launch-status']);

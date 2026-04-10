@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { LogIn, Download, Info } from 'lucide-react'
+import { LogIn, Download, Info, UserPlus } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
@@ -45,7 +45,10 @@ export function AddAccountSection({ onLogin, onImport }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-sm font-medium">Add Account</CardTitle>
+        <div className="flex items-center gap-2">
+          <UserPlus className="h-4 w-4 text-muted-foreground" />
+          <CardTitle className="text-sm font-medium">Add Account</CardTitle>
+        </div>
         <CardDescription>Opens the Riot Client to log in, or captures from a running session.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">

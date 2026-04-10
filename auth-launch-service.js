@@ -68,11 +68,28 @@ class AuthLaunchService {
     }
 
     async getAuthenticatedAccount() {
+        // Primary: entitlements endpoint (full token + PUUID in one call)
         try {
             const r = await this._localApi('GET', '/entitlements/v1/token');
             if (r && r.ok) {
                 const d = await r.json();
                 if (d.accessToken && d.subject) return { puuid: d.subject, accessToken: d.accessToken };
+            }
+        } catch {}
+        // Fallback: rso-auth (works when entitlements service isn't fully loaded, e.g. tray mode)
+        try {
+            const tokenRes = await this._localApi('GET', '/rso-auth/v1/authorization/access-token');
+            if (tokenRes && tokenRes.ok) {
+                const tokenData = await tokenRes.json();
+                if (tokenData.accessToken) {
+                    const userRes = await this._localApi('GET', '/rso-auth/v1/authorization/userinfo');
+                    if (userRes && userRes.ok) {
+                        const userData = await userRes.json();
+                        // userInfo can be a JSON string nested inside the response
+                        const info = typeof userData.userInfo === 'string' ? JSON.parse(userData.userInfo) : (userData.userInfo || userData);
+                        if (info.sub) return { puuid: info.sub, accessToken: tokenData.accessToken };
+                    }
+                }
             }
         } catch {}
         return null;
@@ -206,10 +223,44 @@ class AuthLaunchService {
 
     // --- Add / Import accounts ---
 
+    // Read the live RiotGamesPrivateSettings.yaml directly. Works regardless of UI state (tray, hidden, etc).
+    async _readLiveRiotCookies() {
+        const yamlPath = path.join(this._riotClientDir(), 'Data', 'RiotGamesPrivateSettings.yaml');
+        try {
+            const content = await fs.readFile(yamlPath, 'utf-8');
+            const parsed = yaml.parse(content);
+            const cookies = parsed?.['riot-login']?.persist?.session?.cookies || [];
+            const map = {};
+            for (const c of cookies) { if (c.name && c.value) map[c.name] = c.value; }
+            const tdid = map.tdid || parsed?.['rso-authenticator']?.tdid?.value || '';
+            if (!map.sub || !map.ssid) return null;
+            return { puuid: map.sub, ssid: map.ssid, clid: map.clid || '', csid: map.csid || '', tdid, sub: map.sub };
+        } catch { return null; }
+    }
+
     async importCurrentAccount() {
-        const auth = await this.getAuthenticatedAccount();
-        if (!auth) throw new Error('Riot Client is not running or not logged in. Open the Riot Client and log in first.');
-        const result = await this.authService.addAccountFromTokens(auth.accessToken, '', {});
+        // Primary: read the YAML file directly (works in any UI state)
+        let puuid = null;
+        let accessToken = '';
+        const liveCookies = await this._readLiveRiotCookies();
+        if (liveCookies) {
+            puuid = liveCookies.puuid;
+            // Use SSID reauth to get a fresh access token for fetching user info (display name + region)
+            try {
+                const refreshed = await this.authService._performSSIDAuth(liveCookies.ssid, liveCookies.clid, liveCookies.csid, liveCookies.tdid);
+                if (refreshed.success) accessToken = refreshed.accessToken;
+            } catch {}
+        }
+
+        // Fallback: try the local API if YAML wasn't found or had no session
+        if (!puuid) {
+            const auth = await this.getAuthenticatedAccount();
+            if (!auth) throw new Error('Riot Client is not running or not logged in. Open the Riot Client and log in first.');
+            puuid = auth.puuid;
+            accessToken = auth.accessToken;
+        }
+
+        const result = await this.authService.addAccountFromTokens(accessToken, '', {}, puuid);
         if (!result.success) throw new Error(result.error || 'Failed to add account.');
         await this.snapshotAccountData(result.account.id);
         return result.account;
@@ -242,13 +293,34 @@ class AuthLaunchService {
         console.log('Waiting for Riot Client login...');
         let auth = null;
         const start = Date.now();
-        let uxSeen = false;
+        let windowSeen = false;
+        let windowGoneSince = 0;
+
         while (Date.now() - start < 5 * 60 * 1000) {
-            const uxRunning = await this._isProcessRunning('RiotClientUx.exe');
-            if (uxRunning) uxSeen = true;
-            else if (uxSeen) throw new Error('Riot Client was closed before login completed.');
             auth = await this.getAuthenticatedAccount();
             if (auth) break;
+
+            const [servicesRunning, windowVisible] = await Promise.all([
+                this._isProcessRunning('RiotClientServices.exe'),
+                this._hasVisibleRiotClientWindow(),
+            ]);
+
+            // User fully quit Riot Client
+            if (windowSeen && !servicesRunning) {
+                throw new Error('Riot Client was closed before login completed.');
+            }
+
+            if (windowVisible) {
+                windowSeen = true;
+                windowGoneSince = 0;
+            } else if (windowSeen) {
+                if (windowGoneSince === 0) windowGoneSince = Date.now();
+                // Window was visible and has been gone for >4 seconds = user closed/minimized to tray
+                if (Date.now() - windowGoneSince > 4000) {
+                    throw new Error('Riot Client window was closed before login completed. Try again.');
+                }
+            }
+
             await new Promise(r => setTimeout(r, 2000));
         }
         if (!auth) throw new Error('Login timed out.');
@@ -286,6 +358,45 @@ class AuthLaunchService {
             exec(`tasklist /FI "IMAGENAME eq ${processName}"`, (error, stdout) => {
                 if (error) return resolve(false);
                 resolve(stdout.toLowerCase().includes(processName.replace('.exe', '').toLowerCase()));
+            });
+        });
+    }
+
+    // Returns true if any "Riot Client.exe" instance has a visible window titled "Riot Client"
+    _hasVisibleRiotClientWindow() {
+        return new Promise((resolve) => {
+            if (os.platform() !== 'win32') return resolve(false);
+            exec(`tasklist /FI "IMAGENAME eq Riot Client.exe" /V /FO CSV /NH`, (error, stdout) => {
+                if (error) return resolve(false);
+                const lines = stdout.trim().split('\n');
+                for (const line of lines) {
+                    const cols = line.split('","').map(c => c.replace(/^"|"$/g, '').trim());
+                    if (cols.length < 9) continue;
+                    const title = cols[8];
+                    // Visible windows have a real title; hidden ones show "N/A"
+                    if (title && title !== 'N/A') return resolve(true);
+                }
+                resolve(false);
+            });
+        });
+    }
+
+    // Returns true if processName has at least one instance with a visible window (not hidden in tray)
+    _hasVisibleWindow(processName) {
+        return new Promise((resolve) => {
+            if (os.platform() !== 'win32') return resolve(false);
+            exec(`tasklist /FI "IMAGENAME eq ${processName}" /V /FO CSV /NH`, (error, stdout) => {
+                if (error) return resolve(false);
+                // CSV columns: "Image","PID","Session","Session#","Mem","Status","User","CPU","Window Title"
+                const lines = stdout.trim().split('\n');
+                for (const line of lines) {
+                    const cols = line.split('","').map(c => c.replace(/^"|"$/g, ''));
+                    if (cols.length < 9) continue;
+                    const title = cols[8];
+                    // "N/A" means hidden window, anything else (including empty) means visible
+                    if (title && title !== 'N/A') return resolve(true);
+                }
+                resolve(false);
             });
         });
     }

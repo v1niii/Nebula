@@ -71,8 +71,52 @@ function createTray() {
 function setupAutoUpdater() {
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
-    autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+    autoUpdater.allowPrerelease = false;
+
+    const sendToRenderer = (channel, payload) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send(channel, payload);
+        }
+    };
+
+    autoUpdater.on('checking-for-update', () => {
+        console.log('[updater] Checking for updates...');
+    });
+
+    autoUpdater.on('update-available', (info) => {
+        console.log(`[updater] Update available: v${info.version}`);
+        sendToRenderer('update-status', { type: 'available', version: info.version });
+    });
+
+    autoUpdater.on('update-not-available', (info) => {
+        console.log(`[updater] No updates. Current: v${info.version}`);
+    });
+
+    autoUpdater.on('download-progress', (progress) => {
+        console.log(`[updater] Downloading: ${progress.percent.toFixed(1)}%`);
+    });
+
+    autoUpdater.on('update-downloaded', (info) => {
+        console.log(`[updater] Update v${info.version} downloaded, will install on quit.`);
+        sendToRenderer('update-status', { type: 'downloaded', version: info.version });
+    });
+
+    autoUpdater.on('error', (err) => {
+        console.error('[updater] Error:', err.message);
+    });
+
+    // Initial check on startup
+    autoUpdater.checkForUpdates().catch((e) => console.error('[updater] Check failed:', e.message));
+
+    // Re-check every 4 hours so long-running sessions still get updates
+    setInterval(() => {
+        autoUpdater.checkForUpdates().catch(() => {});
+    }, 4 * 60 * 60 * 1000);
 }
+
+ipcMain.handle('install-update-now', () => {
+    autoUpdater.quitAndInstall();
+});
 
 app.whenReady().then(() => {
     createWindow();
@@ -93,6 +137,8 @@ app.on('before-quit', () => { app.isQuitting = true; });
 // No longer need to scrub YAML on quit - snapshot/restore handles auth state
 
 // --- Account IPC ---
+
+ipcMain.handle('get-app-version', () => app.getVersion());
 
 ipcMain.handle('get-accounts', () => authService.getAccounts());
 
@@ -148,9 +194,22 @@ ipcMain.handle('check-session', async (event, accountId) => {
 let launchInProgress = false;
 function releaseLaunchLock() { launchInProgress = false; }
 
+// Serializes all snapshot operations so they never run concurrently with a launch's restore.
+// Without this, a launch's restoreAccountData can overwrite the disk while a watcher's snapshot
+// is mid-read, corrupting the previous account's saved state.
+let snapshotChain = Promise.resolve();
+function queueSnapshot(accountId) {
+    snapshotChain = snapshotChain.then(() => authLaunchService.snapshotAccountData(accountId).catch(() => {}));
+    return snapshotChain;
+}
+
 ipcMain.handle('launch-valorant', async (event, accountId) => {
     if (launchInProgress) return { success: false, error: 'A launch is already in progress. Please wait.' };
     launchInProgress = true;
+    // Stop the previous watcher and wait for any in-flight snapshot to complete BEFORE
+    // we start overwriting the Riot Client directory with the new account's data.
+    stopValorantWatcher();
+    await snapshotChain;
     if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'launching');
     try {
         const account = authService.getAccountById(accountId);
@@ -291,10 +350,10 @@ function startValorantWatcher(accountId) {
             if (valRunning && !valorantFound) {
                 valorantFound = true;
                 releaseLaunchLock();
-                authLaunchService.snapshotAccountData(accountId).catch(() => {});
+                queueSnapshot(accountId);
                 sendStatus(accountId, 'running');
             } else if (!valRunning && valorantFound) {
-                authLaunchService.snapshotAccountData(accountId).catch(() => {});
+                queueSnapshot(accountId);
                 sendStatus(accountId, 'closed');
                 stopValorantWatcher();
             } else if (!valorantFound && !apiTried && checks >= 2) {

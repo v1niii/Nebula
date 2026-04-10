@@ -132,20 +132,28 @@ class AuthService {
     return account ? { ...account } : null;
   }
 
-  async addAccountFromTokens(accessToken, idToken, cookies) {
+  async addAccountFromTokens(accessToken, idToken, cookies, fallbackPuuid = null) {
     try {
-      const userInfo = await this._getUserInfo(accessToken);
-      const detectedRegion = this._detectRegion(userInfo);
-      const gameName = userInfo.acct?.game_name;
-      const tagLine = userInfo.acct?.tag_line;
-      const hasRiotId = gameName && tagLine;
+      // Try to fetch user info for nice display name + region. Fall back to PUUID-only metadata.
+      let puuid, gameName = null, tagLine = null, detectedRegion = 'NA';
+      try {
+        const userInfo = await this._getUserInfo(accessToken);
+        puuid = userInfo.sub;
+        gameName = userInfo.acct?.game_name;
+        tagLine = userInfo.acct?.tag_line;
+        detectedRegion = this._detectRegion(userInfo);
+      } catch (e) {
+        if (!fallbackPuuid) throw e;
+        puuid = fallbackPuuid;
+      }
 
+      const hasRiotId = gameName && tagLine;
       const accountData = {
-        id: userInfo.sub,
-        username: gameName || `User (${userInfo.sub.substring(0, 5)})`,
+        id: puuid,
+        username: gameName || `User (${puuid.substring(0, 5)})`,
         region: detectedRegion,
-        puuid: userInfo.sub,
-        displayName: hasRiotId ? `${gameName}#${tagLine}` : (gameName || `User (${userInfo.sub.substring(0, 5)})`),
+        puuid,
+        displayName: hasRiotId ? `${gameName}#${tagLine}` : (gameName || `User (${puuid.substring(0, 5)})`),
         nickname: '',
         sortOrder: this.accounts.length,
         lastUsed: Date.now(),
