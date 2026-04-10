@@ -120,15 +120,31 @@ ipcMain.handle('install-update-now', () => {
     autoUpdater.quitAndInstall();
 });
 
-app.whenReady().then(() => {
-    createWindow();
-    createTray();
-    if (process.env.NODE_ENV !== 'development') setupAutoUpdater();
-
-    app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) createWindow();
+// Single-instance lock: if Nebula is already running, quit this new process
+// and focus/restore the existing window instead. Without this, every launch
+// spawns a fresh tray icon and window, leaving orphans in Task Manager.
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+    app.quit();
+} else {
+    app.on('second-instance', () => {
+        if (mainWindow) {
+            if (mainWindow.isMinimized()) mainWindow.restore();
+            if (!mainWindow.isVisible()) mainWindow.show();
+            mainWindow.focus();
+        }
     });
-});
+
+    app.whenReady().then(() => {
+        createWindow();
+        createTray();
+        if (process.env.NODE_ENV !== 'development') setupAutoUpdater();
+
+        app.on('activate', () => {
+            if (BrowserWindow.getAllWindows().length === 0) createWindow();
+        });
+    });
+}
 
 app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') { /* tray keeps app alive */ }
