@@ -352,6 +352,22 @@ ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) =>
         const srcAuth = await authService.getCloudAuthTokens(srcCookies.ssid, srcCookies.clid, srcCookies.csid, srcCookies.tdid);
         const dstAuth = await authService.getCloudAuthTokens(dstCookies.ssid, dstCookies.clid, dstCookies.csid, dstCookies.tdid);
 
+        // Self-heal regions via PAS so the SGP shard routing below uses the
+        // actual Valorant region for each side, not a stale userInfo-derived
+        // guess from import time.
+        const healRegion = async (accountId, current) => {
+            if (regionVerifiedThisSession.has(accountId)) return current;
+            regionVerifiedThisSession.add(accountId);
+            const pas = await authService._getValorantRegionFromPas(accountId === fromId ? srcAuth.accessToken : dstAuth.accessToken);
+            if (pas && pas !== current) {
+                authService.updateAccountRegion(accountId, pas);
+                return pas;
+            }
+            return current;
+        };
+        fromAcc.region = await healRegion(fromId, fromAcc.region);
+        toAcc.region = await healRegion(toId, toAcc.region);
+
         // Build the flat list of pattern strings for every enabled category (used by
         // both the cloud backfill and the local .ini merge — keeps them in lockstep).
         const allCatKeys = Object.keys(KEY_PATTERNS);
@@ -456,6 +472,10 @@ ipcMain.handle('save-settings', async (event, settings) => {
 // Shared helper: fetch access + entitlements tokens for the given account.
 // Prefers stored cookies, falls back to snapshot cookies, mirrors the
 // copy-cloud-settings flow so the same auth path is reused.
+// Self-heals the stored region via PAS once per session — fixes legacy
+// accounts that were saved with the LoL affinity before PAS detection
+// existed, without forcing the user to re-import.
+const regionVerifiedThisSession = new Set();
 async function resolveLiveAuthTokens(accountId) {
     const account = authService.getAccountById(accountId);
     if (!account) throw new Error('Account not found.');
@@ -469,7 +489,19 @@ async function resolveLiveAuthTokens(accountId) {
     const { accessToken, entitlementsToken } = await authService.getCloudAuthTokens(
         cookies.ssid, cookies.clid, cookies.csid, cookies.tdid
     );
-    return { accessToken, entitlementsToken, puuid: account.id, region: account.region };
+
+    let region = account.region;
+    if (!regionVerifiedThisSession.has(accountId)) {
+        regionVerifiedThisSession.add(accountId);
+        const pasRegion = await authService._getValorantRegionFromPas(accessToken);
+        if (pasRegion && pasRegion !== region) {
+            console.log(`[main] region self-heal: ${account.displayName || accountId.slice(0, 8)} ${region} → ${pasRegion}`);
+            authService.updateAccountRegion(accountId, pasRegion);
+            region = pasRegion;
+        }
+    }
+
+    return { accessToken, entitlementsToken, puuid: account.id, region };
 }
 
 ipcMain.handle('get-store', async (event, accountId) => {

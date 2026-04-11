@@ -141,7 +141,11 @@ class AuthService {
         puuid = userInfo.sub;
         gameName = userInfo.acct?.game_name;
         tagLine = userInfo.acct?.tag_line;
-        detectedRegion = this._detectRegion(userInfo);
+        // PAS is authoritative — userInfo.affinity leaks LoL region for legacy
+        // accounts, so check the Valorant-specific PAS endpoint first and only
+        // fall back to userInfo-derived detection if PAS fails.
+        const pasRegion = await this._getValorantRegionFromPas(accessToken);
+        detectedRegion = pasRegion || this._detectRegion(userInfo);
       } catch (e) {
         if (!fallbackPuuid) throw e;
         puuid = fallbackPuuid;
@@ -451,7 +455,55 @@ class AuthService {
     return merged;
   }
 
+  // Update the stored region for an account in place. Used by
+  // resolveLiveAuthTokens to self-heal legacy accounts that were saved
+  // with the wrong region before PAS-based detection existed.
+  updateAccountRegion(accountId, region) {
+    if (!region) return false;
+    this.accounts = this.store.get('accounts', []);
+    const idx = this.accounts.findIndex(a => a.id === accountId);
+    if (idx < 0) return false;
+    if (this.accounts[idx].region === region) return false;
+    this.accounts[idx] = { ...this.accounts[idx], region };
+    this.store.set('accounts', this.accounts);
+    return true;
+  }
+
   // --- Private helpers ---
+
+  // PAS (Player Affinity Service) is the Valorant-authoritative source for
+  // a player's game region. Hits riot-geo with the access token and parses
+  // the returned JWT — `affinity` in its payload is the actual Valorant
+  // shard (na/eu/ap/kr/br/latam/pbe). Returns null on any failure so the
+  // caller can fall back to userInfo-based detection.
+  async _getValorantRegionFromPas(accessToken) {
+    try {
+      const url = 'https://riot-geo.pas.si.riotgames.com/pas/v1/service/chat';
+      const response = await fetch(url, {
+        method: 'GET',
+        agent: riotAgent,
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+      });
+      if (!response.ok) return null;
+      const body = (await response.text()).trim();
+      // PAS sometimes returns a raw JWT, sometimes JSON-wrapped `{ token }`
+      let jwt = body;
+      if (body.startsWith('{')) {
+        try { jwt = JSON.parse(body).token || body; } catch { /* use raw */ }
+      }
+      if (!jwt || jwt.split('.').length !== 3) return null;
+      const payloadB64 = jwt.split('.')[1];
+      const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8'));
+      const affinity = (payload.affinity || '').toLowerCase();
+      const map = { na: 'NA', eu: 'EU', ap: 'AP', kr: 'KR', br: 'BR', latam: 'LATAM', pbe: 'PBE' };
+      return map[affinity] || null;
+    } catch {
+      return null;
+    }
+  }
 
   _detectRegion(userInfo) {
     let shard = null;
