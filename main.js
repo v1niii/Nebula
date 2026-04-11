@@ -395,7 +395,7 @@ ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) =>
             authService.getCloudSettings(srcAuth.accessToken, srcAuth.entitlementsToken, fromAcc.region),
             authService.getCloudSettings(dstAuth.accessToken, dstAuth.entitlementsToken, toAcc.region),
         ]);
-        const { settings: srcSettings, method } = authService._decodeSettingsBlob(srcBlob.data);
+        const { settings: srcSettings } = authService._decodeSettingsBlob(srcBlob.data);
         const { settings: dstSettings } = authService._decodeSettingsBlob(dstBlob.data);
 
         // CRITICAL: Valorant only persists non-default values, and some keys
@@ -416,7 +416,7 @@ ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) =>
         }
 
         const merged = authService.mergeSelectiveSettings(srcSettings, dstSettings, cats, KEY_PATTERNS, EXCLUDE_KEY_PATTERNS, ADDITIVE_CATEGORIES);
-        const newData = authService._encodeSettingsBlob(merged, method);
+        const newData = authService._encodeSettingsBlob(merged);
         await authService.putCloudSettings(dstAuth.accessToken, dstAuth.entitlementsToken, toAcc.region, { data: newData });
 
         // Local .ini merge runs the same pattern set against the per-account

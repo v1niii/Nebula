@@ -366,36 +366,36 @@ class AuthService {
   }
 
   // Decode a cloud settings blob (base64 → decompress → JSON).
-  // Tries raw deflate first (legacy format), falls back to gzip.
+  // Tries gzip first (current Riot format per the player-preferences-*.pp.sgp
+  // infrastructure), then raw deflate + zlib deflate for backward compat with
+  // any legacy blobs. Returns a named tag so the caller can round-trip.
   _decodeSettingsBlob(base64Data) {
     const buf = Buffer.from(base64Data, 'base64');
     const tryMethods = [
-      () => zlib.inflateRawSync(buf),
-      () => zlib.gunzipSync(buf),
-      () => zlib.inflateSync(buf),
+      { name: 'gzip', fn: () => zlib.gunzipSync(buf) },
+      { name: 'inflateRaw', fn: () => zlib.inflateRawSync(buf) },
+      { name: 'inflate', fn: () => zlib.inflateSync(buf) },
     ];
     let lastErr;
-    for (const decode of tryMethods) {
-      try { return { settings: JSON.parse(decode().toString('utf-8')), method: decode }; }
-      catch (e) { lastErr = e; }
+    for (const m of tryMethods) {
+      try {
+        const settings = JSON.parse(m.fn().toString('utf-8'));
+        return { settings, method: m.name };
+      } catch (e) { lastErr = e; }
     }
     throw new Error('Could not decode settings blob: ' + lastErr?.message);
   }
 
-  // Encode settings back to base64 using the same compression method that decoded them
-  _encodeSettingsBlob(settings, method) {
-    const json = JSON.stringify(settings);
-    const buf = Buffer.from(json, 'utf-8');
-    // Use the same compression as decode for round-trip compatibility
-    let compressed;
-    if (method === zlib.inflateRawSync || method?.toString().includes('inflateRaw')) {
-      compressed = zlib.deflateRawSync(buf);
-    } else if (method === zlib.gunzipSync || method?.toString().includes('gunzip')) {
-      compressed = zlib.gzipSync(buf);
-    } else {
-      compressed = zlib.deflateSync(buf);
-    }
-    return compressed.toString('base64');
+  // Encode settings back to base64. ALWAYS uses gzip since that's what the
+  // current playerpreferences SGP API expects; the `method` argument is kept
+  // for signature compatibility but ignored — previously we echoed back the
+  // decode method, but source and target blobs can be in different legacy
+  // formats, and round-tripping source's format into target silently corrupts
+  // the upload (Valorant reads back defaults → user loses saved crosshair
+  // profiles, etc.).
+  _encodeSettingsBlob(settings /* , method */) {
+    const buf = Buffer.from(JSON.stringify(settings), 'utf-8');
+    return zlib.gzipSync(buf).toString('base64');
   }
 
   // Mirror source cloud settings onto target for each enabled category. "Mirror"
