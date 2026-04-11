@@ -1,4 +1,7 @@
 # Nebula
+<img width="740" height="705" alt="image" src="https://github.com/user-attachments/assets/05209b47-df37-460a-b54c-45c146a20fe0" />
+<img width="743" height="698" alt="image" src="https://github.com/user-attachments/assets/82edf74e-6851-41a5-8328-f9e8cd1c3fba" />
+<img width="746" height="698" alt="image" src="https://github.com/user-attachments/assets/9cc261c1-93e6-43b0-99c8-5287ed737ac0" />
 
 A fast, secure Valorant account manager with optional live match info, store tracking, and player stats. Switch between accounts seamlessly.
 
