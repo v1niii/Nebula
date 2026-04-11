@@ -1,5 +1,5 @@
 import { memo, useState, useEffect, useRef } from 'react'
-import { Play, Trash2, Copy, Tag, GripVertical, ShieldCheck, Loader2, RefreshCw } from 'lucide-react'
+import { Play, Trash2, Copy, Tag, GripVertical, ShieldCheck, Loader2, RefreshCw, ClipboardCopy } from 'lucide-react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Button } from '@/components/ui/button'
@@ -15,7 +15,7 @@ function formatTime(ts) {
   try { return new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(new Date(ts)) } catch { return '?' }
 }
 
-export const AccountCard = memo(function AccountCard({ account, launchStatus, onLaunch, onRemove, onCopySettings, onSetNickname, onCheckSession }) {
+export const AccountCard = memo(function AccountCard({ account, launchStatus, rank, session, dndEnabled = true, onLaunch, onRemove, onCopySettings, onSetNickname, onCheckSession }) {
   const [sessionState, setSessionState] = useState(null)
   const toast = useToast()
   const mountedRef = useRef(true)
@@ -25,7 +25,7 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, on
 
   useEffect(() => { return () => { mountedRef.current = false } }, [])
 
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: account.id })
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: account.id, disabled: !dndEnabled })
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }
 
   const riotId = account.displayName || account.username || ''
@@ -65,11 +65,39 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, on
     }
   }
 
+  const handleCopyRiotId = async () => {
+    try {
+      await navigator.clipboard.writeText(riotId)
+      toast.success(`Copied ${riotId}`)
+    } catch {
+      toast.error('Could not copy to clipboard.')
+    }
+  }
+
+  // Session summary: "8W 2L · ↑24 RR" shown inline if we have session data.
+  // Uses directional arrows for the RR delta so positive/negative is legible
+  // without relying purely on color (accessibility).
+  const rrArrow = session && session.rrDelta
+    ? (session.rrDelta > 0 ? `↑${session.rrDelta}` : `↓${Math.abs(session.rrDelta)}`)
+    : null
+  const sessionSummary = session && session.games > 0
+    ? `${session.wins}W ${session.losses}L${rrArrow ? ` · ${rrArrow} RR` : ''}`
+    : null
+
   return (
     <div ref={setNodeRef} style={style} className="flex items-center py-3 px-1 group animate-fade-in overflow-hidden">
-      <button {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing text-muted-foreground/40 hover:text-muted-foreground transition-colors shrink-0 mr-2">
+      <button {...attributes} {...listeners} className={`text-muted-foreground/40 hover:text-muted-foreground transition-colors shrink-0 mr-2 ${dndEnabled ? 'cursor-grab active:cursor-grabbing' : 'cursor-not-allowed opacity-30'}`}>
         <GripVertical className="h-4 w-4" />
       </button>
+
+      {rank?.current?.icon && (
+        <img
+          src={rank.current.icon}
+          alt={rank.current.name}
+          className="h-7 w-7 shrink-0 mr-2"
+          title={`${rank.current.name}${rank.current.rr ? ` · ${rank.current.rr} RR` : ''}${rank.peak?.name ? ` · Peak: ${rank.peak.name}${rank.peak.rr ? ` (${rank.peak.rr} RR)` : ''}` : ''}`}
+        />
+      )}
 
       <div className="min-w-0 flex-1 overflow-hidden mr-2">
         <p className="text-sm font-medium truncate" title={displayName}>
@@ -79,6 +107,19 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, on
         <div className="flex items-center gap-2 mt-0.5 h-4 whitespace-nowrap">
           <span className="text-xs text-muted-foreground">{account.region || 'N/A'}</span>
           <span className="text-xs text-muted-foreground">{formatTime(account.lastUsed)}</span>
+          {rank?.current?.name && (
+            <span className="text-xs text-muted-foreground truncate" title={rank.current.name}>
+              {rank.current.name}
+            </span>
+          )}
+          {sessionSummary && (
+            <span
+              className={`text-xs truncate ${session.rrDelta > 0 ? 'text-green-500' : session.rrDelta < 0 ? 'text-red-500' : 'text-muted-foreground'}`}
+              title={`Today: ${session.games} games · ${session.wins}W ${session.losses}L · K/D ${session.kd}${session.rrDelta ? ` · ${session.rrDelta > 0 ? '+' : ''}${session.rrDelta} RR` : ''}`}
+            >
+              · {sessionSummary}
+            </span>
+          )}
           <StatusIndicator status={launchStatus} />
         </div>
       </div>
@@ -90,6 +131,9 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, on
            sessionState === 'unknown' ? <ShieldCheck className="h-3.5 w-3.5 text-amber-500" /> :
            sessionState === 'expired' ? <RefreshCw className="h-3.5 w-3.5 text-destructive" /> :
            <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground" />}
+        </Button>
+        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={handleCopyRiotId} title="Copy Riot ID">
+          <ClipboardCopy className="h-3.5 w-3.5" />
         </Button>
         <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => onSetNickname(account)} title="Set nickname">
           <Tag className="h-3.5 w-3.5" />

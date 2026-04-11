@@ -5,6 +5,14 @@ export default {
     './index.html',
     './src/**/*.{js,jsx}',
   ],
+  safelist: [
+    // Dynamic party-color border classes assigned from MatchInfoTab
+    'border-l-purple-500',
+    'border-l-cyan-500',
+    'border-l-orange-500',
+    'border-l-pink-500',
+    'border-l-yellow-500',
+  ],
   theme: {
     extend: {
       fontFamily: {
@@ -52,18 +60,23 @@ export default {
           '50%': { opacity: '0.4' },
         },
         'fade-in': {
-          from: { opacity: '0', transform: 'translateY(4px)' },
-          to: { opacity: '1', transform: 'translateY(0)' },
+          from: { opacity: '0' },
+          to: { opacity: '1' },
         },
         'slide-in': {
-          from: { opacity: '0', transform: 'translateY(-8px)' },
+          from: { opacity: '0', transform: 'translateY(-4px)' },
           to: { opacity: '1', transform: 'translateY(0)' },
+        },
+        'shimmer': {
+          '0%': { backgroundPosition: '-200% 0' },
+          '100%': { backgroundPosition: '200% 0' },
         },
       },
       animation: {
         'pulse-soft': 'pulse-soft 2s ease-in-out infinite',
-        'fade-in': 'fade-in 0.3s ease-out',
-        'slide-in': 'slide-in 0.2s ease-out',
+        'fade-in': 'fade-in 0.15s ease-out both',
+        'slide-in': 'slide-in 0.18s ease-out both',
+        'shimmer': 'shimmer 1.8s linear infinite',
       },
     },
   },

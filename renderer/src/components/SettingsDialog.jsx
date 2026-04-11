@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { CheckCircle2, XCircle, Settings2, FolderCog, Palette, Rocket, Sun, Moon, Monitor, Save } from 'lucide-react'
+import { CheckCircle2, XCircle, Settings2, FolderCog, Palette, Rocket, Sun, Moon, Monitor, Save, Store, Swords, Key } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -8,11 +8,14 @@ import { Switch } from '@/components/ui/switch'
 import { useTheme } from '@/hooks/useTheme.jsx'
 import { useToast } from '@/components/ui/toast'
 
-export function SettingsDialog({ open, onOpenChange }) {
+export function SettingsDialog({ open, onOpenChange, onSaved }) {
   const { theme, setTheme } = useTheme()
   const [riotClientPath, setRiotClientPath] = useState('')
   const [localTheme, setLocalTheme] = useState(theme)
   const [autoLaunch, setAutoLaunch] = useState(true)
+  const [enableStore, setEnableStore] = useState(false)
+  const [enableMatchInfo, setEnableMatchInfo] = useState(false)
+  const [henrikdevApiKey, setHenrikdevApiKey] = useState('')
   const [saving, setSaving] = useState(false)
   const toast = useToast()
 
@@ -22,17 +25,27 @@ export function SettingsDialog({ open, onOpenChange }) {
         setRiotClientPath(s.riotClientPath || '')
         setLocalTheme(s.theme || 'system')
         setAutoLaunch(s.autoLaunchValorant !== false)
+        setEnableStore(!!s.enableStoreFeature)
+        setEnableMatchInfo(!!s.enableMatchInfoFeature)
+        setHenrikdevApiKey(s.henrikdevApiKey || '')
       })
     }
   }, [open])
 
   const handleSave = async () => {
     setSaving(true)
-    const result = await window.electronAPI.saveSettings({ theme: localTheme, autoLaunchValorant: autoLaunch })
+    const result = await window.electronAPI.saveSettings({
+      theme: localTheme,
+      autoLaunchValorant: autoLaunch,
+      enableStoreFeature: enableStore,
+      enableMatchInfoFeature: enableMatchInfo,
+      henrikdevApiKey,
+    })
     setSaving(false)
     if (result.success) {
       setTheme(localTheme)
       toast.success('Settings saved.')
+      if (onSaved) onSaved()
       onOpenChange(false)
     }
   }
@@ -100,6 +113,67 @@ export function SettingsDialog({ open, onOpenChange }) {
               </div>
             </div>
             <Switch checked={autoLaunch} onCheckedChange={setAutoLaunch} />
+          </div>
+
+          <Separator />
+
+          <div className="space-y-3">
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Live API features</p>
+              <p className="text-[11px] text-amber-500 mt-0.5">⚠ Could be bannable — low chance, use at your own risk</p>
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-start gap-2 flex-1">
+                <Store className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
+                <div>
+                  <label className="text-sm font-medium">Store & Nightmarket</label>
+                  <p className="text-xs text-muted-foreground">View daily offers and Nightmarket for any account. Uses Riot's live API.</p>
+                </div>
+              </div>
+              <Switch checked={enableStore} onCheckedChange={setEnableStore} />
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-start gap-2 flex-1">
+                <Swords className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
+                <div>
+                  <label className="text-sm font-medium">Match Info</label>
+                  <p className="text-xs text-muted-foreground">See players, agents, map, and side in pre-game or in-game. Uses Riot's live API.</p>
+                </div>
+              </div>
+              <Switch checked={enableMatchInfo} onCheckedChange={setEnableMatchInfo} />
+            </div>
+
+            {enableMatchInfo && (
+              <div className="space-y-1.5 pl-5">
+                <label className="text-xs font-medium flex items-center gap-1.5">
+                  <Key className="h-3 w-3 text-muted-foreground" />
+                  Henrikdev API key <span className="text-muted-foreground font-normal">(optional)</span>
+                </label>
+                <input
+                  type="password"
+                  value={henrikdevApiKey}
+                  onChange={(e) => setHenrikdevApiKey(e.target.value)}
+                  placeholder="HDEV-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                  className="w-full h-8 px-2.5 rounded-md border bg-secondary/50 text-xs font-mono focus:outline-none focus:border-purple-500/50 transition-colors"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  Last-resort fallback for hidden names via api.henrikdev.xyz community cache.
+                  Free key at{' '}
+                  <button
+                    type="button"
+                    onClick={() => window.electronAPI.openExternalLink('https://docs.henrikdev.xyz/')}
+                    className="text-purple-500 hover:underline"
+                  >
+                    docs.henrikdev.xyz
+                  </button>
+                  . Leave blank to skip.
+                </p>
+              </div>
+            )}
           </div>
 
           <Button onClick={handleSave} disabled={saving} className="w-full gap-1.5">

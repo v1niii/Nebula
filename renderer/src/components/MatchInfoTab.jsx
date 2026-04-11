@@ -1,0 +1,435 @@
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Swords, RefreshCw, Shield, Crosshair, EyeOff, Circle, CircleCheck, Copy, AlertTriangle, Ban, Sparkles } from 'lucide-react'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import { useToast } from '@/components/ui/toast'
+import { PlayerStatsDialog } from '@/components/PlayerStatsDialog'
+import { BlacklistDialog } from '@/components/BlacklistDialog'
+
+// Shimmer placeholder that mirrors the real match-info layout: map card,
+// self banner, then a column of player rows.
+function MatchInfoSkeleton() {
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="rounded-md border bg-card p-3">
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-10 w-16 shrink-0" />
+          <div className="flex-1 space-y-1.5">
+            <Skeleton className="h-3.5 w-28" />
+            <Skeleton className="h-2.5 w-20" />
+          </div>
+          <Skeleton className="h-6 w-16 shrink-0" />
+        </div>
+      </div>
+      <div className="rounded-md border bg-card p-3 flex items-center gap-3">
+        <Skeleton className="h-12 w-12 rounded shrink-0" />
+        <div className="flex-1 space-y-1.5">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-2.5 w-24" />
+        </div>
+        <Skeleton className="h-10 w-10 shrink-0" />
+      </div>
+      <div className="space-y-2">
+        <Skeleton className="h-3 w-20" />
+        <div className="space-y-1.5">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-2.5 rounded-md border px-2.5 py-2">
+              <Skeleton className="h-8 w-8 rounded shrink-0" />
+              <div className="flex-1 space-y-1.5">
+                <Skeleton className="h-3 w-28" />
+                <Skeleton className="h-2.5 w-16" />
+              </div>
+              <Skeleton className="h-7 w-7 shrink-0" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Pure puuid-based lookup. Blacklist entries are always puuid-keyed now
+// (added via the stats dialog), so a direct map access is all we need.
+function findBlacklistEntry(blacklist, player) {
+  if (!player?.puuid) return null
+  return blacklist[player.puuid] || null
+}
+
+// Party color palette — cycled through for distinct partyIds in a match.
+// Only applied when ≥2 players share a partyId (solo-queue partyIds are
+// still unique but uninteresting to highlight).
+const PARTY_COLORS = [
+  'border-l-purple-500',
+  'border-l-cyan-500',
+  'border-l-orange-500',
+  'border-l-pink-500',
+  'border-l-yellow-500',
+]
+
+// Given a list of players, returns a Map<partyId, colorClass> for every
+// party of size ≥2. Single-player "parties" are omitted so solo queuers get
+// no color strip.
+function assignPartyColors(allPlayers) {
+  const counts = new Map()
+  for (const p of allPlayers) {
+    if (!p?.partyId) continue
+    counts.set(p.partyId, (counts.get(p.partyId) || 0) + 1)
+  }
+  const colors = new Map()
+  let i = 0
+  for (const [partyId, count] of counts) {
+    if (count >= 2) {
+      colors.set(partyId, PARTY_COLORS[i % PARTY_COLORS.length])
+      i++
+    }
+  }
+  return colors
+}
+
+// User's own player card banner. Clickable — opens the same stats dialog
+// you'd see for any other player. No background splash art (user request).
+// Gets a colored left border when the viewing player is in a party.
+function SelfBanner({ self, onClick, partyColor }) {
+  const partyBorder = partyColor ? `border-l-[3px] ${partyColor}` : ''
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 rounded-md border bg-card/60 p-3 text-left transition-colors duration-150 hover:border-purple-500/30 hover:bg-card ${partyBorder}`}
+    >
+      {self.agent?.icon ? (
+        <img src={self.agent.icon} alt={self.agent.name} className="h-12 w-12 rounded shrink-0 border border-border" />
+      ) : (
+        <div className="h-12 w-12 rounded bg-secondary flex items-center justify-center shrink-0">
+          <Circle className="h-4 w-4 text-muted-foreground" />
+        </div>
+      )}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-semibold truncate">{self.name}</p>
+        <p className="text-xs text-muted-foreground truncate">
+          {self.agent?.name || 'Picking...'}
+          {self.accountLevel ? ` · Lv ${self.accountLevel}` : ''}
+        </p>
+      </div>
+      {self.rank?.icon && (
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="text-right">
+            <p className="text-xs font-medium truncate">{self.rank.name}</p>
+            {self.rank.rr != null && <p className="text-[10px] text-muted-foreground">{self.rank.rr} RR</p>}
+          </div>
+          <img src={self.rank.icon} alt={self.rank.name} className="h-10 w-10" />
+        </div>
+      )}
+    </button>
+  )
+}
+
+function PlayerRow({ p, blacklisted, partyColor, onClick, onCopy }) {
+  const handleCopy = (e) => {
+    e.stopPropagation()
+    onCopy(p.name)
+  }
+  // 3px left border indicates party membership. Applied via dynamic tailwind
+  // class; empty when solo.
+  const partyBorder = partyColor ? `border-l-[3px] ${partyColor}` : ''
+  const base = `group w-full flex items-center gap-2.5 rounded-md border px-2.5 py-2 text-left transition-colors duration-150 ${partyBorder}`
+  const skin = blacklisted
+    ? 'border-red-500/50 bg-red-500/10 hover:bg-red-500/15'
+    : 'bg-card/50 hover:border-purple-500/30 hover:bg-card'
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`${base} ${skin}`}
+      title={blacklisted ? `Blacklisted: ${blacklisted.reason || 'No reason'}` : undefined}
+    >
+      <div className="relative flex items-center gap-2.5 w-full">
+      {p.agent?.icon ? (
+        <img src={p.agent.icon} alt={p.agent.name} className="h-8 w-8 rounded shrink-0" />
+      ) : (
+        <div className="h-8 w-8 rounded bg-secondary flex items-center justify-center shrink-0">
+          <Circle className="h-3 w-3 text-muted-foreground" />
+        </div>
+      )}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <p className="text-sm font-medium truncate" title={p.name}>{p.name}</p>
+          {p.isIncognito && <EyeOff className="h-3 w-3 text-muted-foreground shrink-0" title="Incognito" />}
+          {p.locked && <CircleCheck className="h-3 w-3 text-green-500 shrink-0" title="Locked in" />}
+          {p.isSmurf && (
+            <Sparkles
+              className="h-3 w-3 text-amber-400 shrink-0"
+              title={`Possible smurf — level ${p.accountLevel} at ${p.rank?.name || 'high rank'}`}
+            />
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground truncate">
+          {p.agent?.name || 'Picking...'}{p.accountLevel ? ` · Lv ${p.accountLevel}` : ''}
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={handleCopy}
+        className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center shrink-0 opacity-60 hover:opacity-100 transition-opacity"
+        title="Copy name"
+      >
+        <Copy className="h-3.5 w-3.5" />
+      </button>
+      {p.rank?.icon && (
+        <img src={p.rank.icon} alt={p.rank.name} className="h-7 w-7 shrink-0" title={`${p.rank.name} · ${p.rank.rr} RR`} />
+      )}
+      </div>
+    </button>
+  )
+}
+
+function TeamPanel({ title, players, accent, icon: Icon, blacklist, partyColors, onPlayerClick, onCopy }) {
+  return (
+    <div className="flex-1 min-w-0 space-y-2">
+      <div className="flex items-center gap-1.5">
+        <Icon className={`h-3.5 w-3.5 ${accent}`} />
+        <h3 className="text-sm font-semibold">{title}</h3>
+        <span className="text-xs text-muted-foreground">({players.length})</span>
+      </div>
+      <div className="space-y-1.5">
+        {players.length
+          ? players.map(p => (
+              <PlayerRow
+                key={p.puuid}
+                p={p}
+                blacklisted={findBlacklistEntry(blacklist, p)}
+                partyColor={partyColors?.get(p.partyId)}
+                onClick={() => onPlayerClick(p)}
+                onCopy={onCopy}
+              />
+            ))
+          : <p className="text-xs text-muted-foreground px-1">No players visible yet.</p>}
+      </div>
+    </div>
+  )
+}
+
+
+export function MatchInfoTab({ accounts }) {
+  const [selectedId, setSelectedId] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [match, setMatch] = useState(null)
+  const [selectedPlayer, setSelectedPlayer] = useState(null)
+  const [blacklist, setBlacklist] = useState({})
+  const [blacklistOpen, setBlacklistOpen] = useState(false)
+  const toast = useToast()
+
+  useEffect(() => {
+    if (!selectedId && accounts.length) setSelectedId(accounts[0].id)
+  }, [accounts, selectedId])
+
+  // Load blacklist once on mount; refresh when a player is (un)blacklisted
+  // via the stats dialog by passing the setter down.
+  const reloadBlacklist = useCallback(async () => {
+    try {
+      const result = await window.electronAPI.getBlacklist()
+      if (result.success) setBlacklist(result.blacklist || {})
+    } catch { /* silent */ }
+  }, [])
+  useEffect(() => { reloadBlacklist() }, [reloadBlacklist])
+
+  const fetchMatch = useCallback(async () => {
+    if (!selectedId) return
+    setLoading(true)
+    try {
+      const result = await window.electronAPI.getMatchInfo(selectedId)
+      if (result.success) setMatch(result.match)
+      else { toast.error(result.error || 'Failed to load match info.'); setMatch(null) }
+    } catch (e) {
+      toast.error(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [selectedId, toast])
+
+  useEffect(() => {
+    if (selectedId) fetchMatch()
+  }, [selectedId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Pre-compute the blacklist-hit set for the current match — used by the
+  // warning banner, the row highlighter, and the toast below. Includes the
+  // self player so you see a hit even if it's on your own card.
+  const blacklistHits = useMemo(() => {
+    if (!match?.inMatch) return []
+    const all = [match.self, ...(match.ally || []), ...(match.enemy || [])].filter(Boolean)
+    return all.map(p => ({ p, entry: findBlacklistEntry(blacklist, p) })).filter(x => x.entry)
+  }, [match, blacklist])
+
+  // Party color map — distinct colors per premade group (size ≥2). Computed
+  // once per match load, covers both teams.
+  const partyColors = useMemo(() => {
+    if (!match?.inMatch) return new Map()
+    const all = [match.self, ...(match.ally || []), ...(match.enemy || [])].filter(Boolean)
+    return assignPartyColors(all)
+  }, [match])
+
+  // Warn whenever a fresh match load contains one or more blacklisted players.
+  useEffect(() => {
+    if (!blacklistHits.length) return
+    const names = blacklistHits.map(x => x.entry.name || x.p.name).join(', ')
+    toast.error(`⚠  Blacklisted player in match: ${names}`, { duration: 15000 })
+  }, [blacklistHits, toast])
+
+  const handleCopyName = useCallback(async (name) => {
+    try {
+      await navigator.clipboard.writeText(name)
+      toast.success(`Copied ${name}`)
+    } catch {
+      toast.error('Could not copy to clipboard.')
+    }
+  }, [toast])
+
+  return (
+    <div className="flex flex-col gap-4 h-full overflow-y-auto pr-1">
+      <div className="flex items-center gap-2">
+        <Select value={selectedId} onValueChange={setSelectedId}>
+          <SelectTrigger className="flex-1">
+            <SelectValue placeholder="Select an account..." />
+          </SelectTrigger>
+          <SelectContent>
+            {accounts.map(a => (
+              <SelectItem key={a.id} value={a.id}>
+                {a.displayName || a.username}{a.nickname ? ` (${a.nickname})` : ''} · {a.region}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button variant="outline" size="icon" onClick={() => setBlacklistOpen(true)} title="Manage blacklist">
+          <Ban className="h-4 w-4" />
+        </Button>
+        <Button variant="outline" size="icon" onClick={fetchMatch} disabled={loading || !selectedId} title="Refresh">
+          <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+        </Button>
+      </div>
+
+      {blacklistHits.length > 0 && (
+        <div className="flex items-start gap-2 rounded-md border border-red-500/50 bg-red-500/10 px-3 py-2">
+          <AlertTriangle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-semibold text-red-500">Blacklisted player{blacklistHits.length > 1 ? 's' : ''} in this match</p>
+            <p className="text-[11px] text-muted-foreground truncate">
+              {blacklistHits.map(x => x.entry.name || x.p.name).join(', ')}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {loading && !match && <MatchInfoSkeleton />}
+
+      {match && !match.inMatch && (
+        <div className="flex-1 flex flex-col items-center justify-center text-sm text-muted-foreground gap-2">
+          <Swords className="h-8 w-8 opacity-40" />
+          <p>Not currently in a match.</p>
+          <p className="text-xs">Queue up or enter agent select, then hit refresh.</p>
+        </div>
+      )}
+
+      {match?.inMatch && (
+        <div className="flex flex-col gap-4">
+          <div className="rounded-md border bg-card p-3 space-y-1">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 min-w-0">
+                {match.map?.splash && (
+                  <div className="h-10 w-16 rounded overflow-hidden shrink-0 bg-secondary">
+                    <img src={match.map.splash} alt={match.map.name} className="h-full w-full object-cover" />
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold truncate">{match.map?.name || 'Unknown Map'}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {match.phase === 'PREGAME' ? 'Agent Select' : 'In Game'}
+                  </p>
+                </div>
+              </div>
+              {!match.isFreeForAll && (
+                <div className={`px-2 py-1 rounded text-xs font-semibold ${
+                  match.yourSide === 'Attack'
+                    ? 'bg-red-500/15 text-red-500'
+                    : 'bg-blue-500/15 text-blue-500'
+                }`}>
+                  {match.yourSide}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Self card — clickable to open the stats dialog for yourself. */}
+          {match.self && (
+            <SelfBanner
+              self={match.self}
+              partyColor={partyColors?.get(match.self.partyId)}
+              onClick={() => setSelectedPlayer(match.self)}
+            />
+          )}
+
+          {match.isFreeForAll ? (
+            // Deathmatch / other FFA modes: everyone except the viewing
+            // player ends up in `enemy` because each player has a unique
+            // TeamID. Render as a single "Players" panel.
+            <TeamPanel
+              title="Players"
+              players={match.enemy}
+              accent="text-muted-foreground"
+              icon={Swords}
+              blacklist={blacklist}
+              partyColors={partyColors}
+              onPlayerClick={setSelectedPlayer}
+              onCopy={handleCopyName}
+            />
+          ) : (
+            <>
+              <TeamPanel
+                title="Your Team"
+                players={match.ally}
+                accent="text-green-500"
+                icon={Shield}
+                blacklist={blacklist}
+                partyColors={partyColors}
+                onPlayerClick={setSelectedPlayer}
+                onCopy={handleCopyName}
+              />
+              {match.phase === 'INGAME' && (
+                <TeamPanel
+                  title="Enemy Team"
+                  players={match.enemy}
+                  accent="text-red-500"
+                  icon={Crosshair}
+                  blacklist={blacklist}
+                  partyColors={partyColors}
+                  onPlayerClick={setSelectedPlayer}
+                  onCopy={handleCopyName}
+                />
+              )}
+            </>
+          )}
+          {match.phase === 'PREGAME' && (
+            <p className="text-xs text-muted-foreground italic">
+              Enemy team is hidden until the match starts.
+            </p>
+          )}
+        </div>
+      )}
+
+      <PlayerStatsDialog
+        open={!!selectedPlayer}
+        onOpenChange={(o) => { if (!o) setSelectedPlayer(null) }}
+        player={selectedPlayer}
+        viewerAccountId={selectedId}
+        blacklistEntry={selectedPlayer ? findBlacklistEntry(blacklist, selectedPlayer) : null}
+        onBlacklistChange={reloadBlacklist}
+      />
+
+      <BlacklistDialog
+        open={blacklistOpen}
+        onOpenChange={setBlacklistOpen}
+        onChange={reloadBlacklist}
+      />
+    </div>
+  )
+}

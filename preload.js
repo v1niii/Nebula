@@ -16,6 +16,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     getSettings: () => ipcRenderer.invoke('get-settings'),
     saveSettings: (s) => ipcRenderer.invoke('save-settings', s),
+    getStore: (id) => ipcRenderer.invoke('get-store', id),
+    getMatchInfo: (id) => ipcRenderer.invoke('get-match-info', id),
+    getAccountRank: (id) => ipcRenderer.invoke('get-account-rank', id),
+    getSessionStats: (id) => ipcRenderer.invoke('get-session-stats', id),
+    getPlayerStats: (viewerId, targetPuuid) => ipcRenderer.invoke('get-player-stats', viewerId, targetPuuid),
+    getBlacklist: () => ipcRenderer.invoke('get-blacklist'),
+    addToBlacklist: (entry) => ipcRenderer.invoke('add-to-blacklist', entry),
+    removeFromBlacklist: (puuid) => ipcRenderer.invoke('remove-from-blacklist', puuid),
+    getWishlist: () => ipcRenderer.invoke('get-wishlist'),
+    addToWishlist: (entry) => ipcRenderer.invoke('add-to-wishlist', entry),
+    removeFromWishlist: (uuid) => ipcRenderer.invoke('remove-from-wishlist', uuid),
+    getSkinCatalog: (accountId) => ipcRenderer.invoke('get-skin-catalog', accountId),
     minimizeToTray: () => ipcRenderer.invoke('minimize-to-tray'),
     quitApp: () => ipcRenderer.invoke('quit-app'),
     onConfirmClose: (cb) => {

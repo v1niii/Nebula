@@ -8,6 +8,7 @@ app.setName('Nebula');
 if (process.platform === 'win32') app.setAppUserModelId('com.v1niii.nebula');
 const { AuthService } = require('./auth-service');
 const { AuthLaunchService, KEY_PATTERNS, EXCLUDE_KEY_PATTERNS } = require('./auth-launch-service');
+const gameService = require('./game-service');
 
 const appStore = new store({ clearInvalidConfig: true });
 const authService = new AuthService(appStore);
@@ -58,16 +59,46 @@ function createTray() {
     const iconPath = path.join(__dirname, 'assets/icon.png');
     const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
     tray = new Tray(icon);
-
-    const contextMenu = Menu.buildFromTemplate([
-        { label: 'Show Nebula', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } } },
-        { type: 'separator' },
-        { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } }
-    ]);
-
     tray.setToolTip('Nebula - Valorant Account Manager');
-    tray.setContextMenu(contextMenu);
+    rebuildTrayMenu();
     tray.on('click', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
+}
+
+// Rebuilds the tray right-click menu with the current account list as
+// quick-launch shortcuts. Called on startup and whenever the account list
+// changes (add/remove/reorder/nickname).
+function rebuildTrayMenu() {
+    if (!tray) return;
+    const accounts = authService.getAccounts() || [];
+    const template = [
+        { label: 'Show Nebula', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } } },
+    ];
+    if (accounts.length) {
+        template.push({ type: 'separator' });
+        template.push({ label: 'Launch', enabled: false });
+        // Limit to 10 to keep the menu compact; users with more accounts can
+        // still use the main window.
+        for (const acc of accounts.slice(0, 10)) {
+            const label = acc.nickname
+                ? `${acc.nickname} (${acc.displayName || acc.username})`
+                : (acc.displayName || acc.username || 'Unknown');
+            template.push({
+                label,
+                click: () => launchFromTray(acc.id),
+            });
+        }
+    }
+    template.push({ type: 'separator' });
+    template.push({ label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } });
+    tray.setContextMenu(Menu.buildFromTemplate(template));
+}
+
+// Kicks off a launch from the tray menu. Surfaces the main window first so
+// the user sees the launching status indicator, then calls the same shared
+// launch function the IPC handler uses.
+function launchFromTray(accountId) {
+    if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
+    performLaunch(accountId).catch(e => console.warn('[tray] launch failed:', e?.message));
 }
 
 function setupAutoUpdater() {
@@ -140,6 +171,13 @@ if (!gotTheLock) {
         createTray();
         if (process.env.NODE_ENV !== 'development') setupAutoUpdater();
 
+        // Load the persisted name cache for the Match Info "yoinker" fallback.
+        // Stored in userData so it survives across Nebula restarts and grows
+        // organically as the user plays — every match adds new puuid → name
+        // mappings that persist forever.
+        const nameCachePath = path.join(app.getPath('userData'), 'name-cache.json');
+        gameService.loadNameCache(nameCachePath).catch(() => {});
+
         app.on('activate', () => {
             if (BrowserWindow.getAllWindows().length === 0) createWindow();
         });
@@ -165,6 +203,7 @@ ipcMain.handle('get-accounts', () => authService.getAccounts());
 ipcMain.handle('login-with-riot', async () => {
     try {
         const account = await authLaunchService.addViaRiotClient();
+        rebuildTrayMenu();
         return { success: true, account };
     } catch (error) {
         return { success: false, error: error.message };
@@ -174,6 +213,7 @@ ipcMain.handle('login-with-riot', async () => {
 ipcMain.handle('import-current-account', async () => {
     try {
         const account = await authLaunchService.importCurrentAccount();
+        rebuildTrayMenu();
         return account ? { success: true, account } : { success: false, error: 'Could not import account.' };
     } catch (error) {
         return { success: false, error: error.message };
@@ -184,16 +224,21 @@ ipcMain.handle('remove-account', async (event, accountId) => {
     try {
         await authService.removeAccount(accountId);
         await authLaunchService.deleteSnapshot(accountId);
+        rebuildTrayMenu();
         return { success: true };
     } catch (error) { return { success: false, error: error.message }; }
 });
 
 ipcMain.handle('set-nickname', async (event, accountId, nickname) => {
-    return authService.setNickname(accountId, nickname);
+    const result = authService.setNickname(accountId, nickname);
+    rebuildTrayMenu();
+    return result;
 });
 
 ipcMain.handle('reorder-accounts', async (event, orderedIds) => {
-    return authService.reorderAccounts(orderedIds);
+    const result = authService.reorderAccounts(orderedIds);
+    rebuildTrayMenu();
+    return result;
 });
 
 ipcMain.handle('check-session', async (event, accountId) => {
@@ -221,7 +266,10 @@ function queueSnapshot(accountId) {
     return snapshotChain;
 }
 
-ipcMain.handle('launch-valorant', async (event, accountId) => {
+// Shared launch entry point — invoked by both the `launch-valorant` IPC
+// handler (from the main window) and the tray quick-launch menu. Returns the
+// same shape so both callers can react consistently.
+async function performLaunch(accountId) {
     if (launchInProgress) return { success: false, error: 'A launch is already in progress. Please wait.' };
     launchInProgress = true;
     // Stop the previous watcher and wait for any in-flight snapshot to complete BEFORE
@@ -252,7 +300,6 @@ ipcMain.handle('launch-valorant', async (event, accountId) => {
                 if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'idle');
             }).catch((e) => {
                 releaseLaunchLock();
-                // Make sure the UI doesn't stay stuck on "error" forever if relogin fails/times out.
                 if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'idle');
                 console.warn('Re-login flow failed:', e?.message || e);
             });
@@ -262,7 +309,6 @@ ipcMain.handle('launch-valorant', async (event, accountId) => {
         await authService.updateLastUsed(accountId);
         if (autoLaunch) {
             startValorantWatcher(accountId);
-            // Lock releases when watcher detects Valorant running or gives up
         } else {
             setTimeout(() => sendStatus(accountId, 'closed'), 3000);
             releaseLaunchLock();
@@ -273,7 +319,9 @@ ipcMain.handle('launch-valorant', async (event, accountId) => {
         if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'error', error.message);
         return { success: false, error: error.message };
     }
-});
+}
+
+ipcMain.handle('launch-valorant', (event, accountId) => performLaunch(accountId));
 
 ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) => {
     try {
@@ -373,6 +421,13 @@ ipcMain.handle('get-settings', async () => {
         riotClientPath,
         theme: appStore.get('theme', 'system'),
         autoLaunchValorant: appStore.get('autoLaunchValorant', true),
+        // Opt-in live API features — both default OFF. When off, the tabs are
+        // hidden AND the IPC handlers refuse the request (no endpoint calls).
+        enableStoreFeature: appStore.get('enableStoreFeature', false),
+        enableMatchInfoFeature: appStore.get('enableMatchInfoFeature', false),
+        // Optional Henrikdev API key for the community-cache name fallback.
+        // Empty string = not configured = skip that fallback entirely.
+        henrikdevApiKey: appStore.get('henrikdevApiKey', ''),
     };
 });
 
@@ -384,6 +439,181 @@ ipcMain.handle('save-settings', async (event, settings) => {
     if (typeof settings.autoLaunchValorant === 'boolean') {
         appStore.set('autoLaunchValorant', settings.autoLaunchValorant);
     }
+    if (typeof settings.enableStoreFeature === 'boolean') {
+        appStore.set('enableStoreFeature', settings.enableStoreFeature);
+    }
+    if (typeof settings.enableMatchInfoFeature === 'boolean') {
+        appStore.set('enableMatchInfoFeature', settings.enableMatchInfoFeature);
+    }
+    if (typeof settings.henrikdevApiKey === 'string') {
+        appStore.set('henrikdevApiKey', settings.henrikdevApiKey.trim());
+    }
+    return { success: true };
+});
+
+// --- Live Valorant API IPC (gated by opt-in settings) ---
+
+// Shared helper: fetch access + entitlements tokens for the given account.
+// Prefers stored cookies, falls back to snapshot cookies, mirrors the
+// copy-cloud-settings flow so the same auth path is reused.
+async function resolveLiveAuthTokens(accountId) {
+    const account = authService.getAccountById(accountId);
+    if (!account) throw new Error('Account not found.');
+    const stored = await authService.retrieveCookiesSecurely(accountId);
+    let cookies = stored?.ssid ? stored : null;
+    if (!cookies) {
+        const snap = await authLaunchService.extractCookiesFromSnapshot(accountId);
+        if (snap?.ssid) cookies = snap;
+    }
+    if (!cookies?.ssid) throw new Error('Session expired. Launch this account first.');
+    const { accessToken, entitlementsToken } = await authService.getCloudAuthTokens(
+        cookies.ssid, cookies.clid, cookies.csid, cookies.tdid
+    );
+    return { accessToken, entitlementsToken, puuid: account.id, region: account.region };
+}
+
+ipcMain.handle('get-store', async (event, accountId) => {
+    if (!appStore.get('enableStoreFeature', false)) {
+        return { success: false, error: 'Store feature is disabled in settings.' };
+    }
+    try {
+        const ctx = await resolveLiveAuthTokens(accountId);
+        const store = await gameService.getStore(ctx);
+        return { success: true, store };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('get-match-info', async (event, accountId) => {
+    if (!appStore.get('enableMatchInfoFeature', false)) {
+        return { success: false, error: 'Match Info feature is disabled in settings.' };
+    }
+    try {
+        const ctx = await resolveLiveAuthTokens(accountId);
+        const henrikdevApiKey = appStore.get('henrikdevApiKey', '');
+        const info = await gameService.getMatchInfo(ctx, { henrikdevApiKey });
+        return { success: true, match: info };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
+// Rank badge lookup for a single account (used by Account Manager display).
+// NOT gated by the Match Info feature toggle — a single rank fetch per account
+// is lightweight, stays account-scoped, and is part of the core account
+// management experience. The heavier Match Info surface is still gated.
+ipcMain.handle('get-account-rank', async (event, accountId) => {
+    try {
+        const ctx = await resolveLiveAuthTokens(accountId);
+        const rank = await gameService.getAccountRank(ctx);
+        return { success: true, rank };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
+// Today's session stats: W/L, K/D, RR delta. Like rank badges, this is a
+// core account-management feature and is NOT gated behind the Match Info flag.
+ipcMain.handle('get-session-stats', async (event, accountId) => {
+    try {
+        const ctx = await resolveLiveAuthTokens(accountId);
+        const session = await gameService.getSessionStats(ctx);
+        return { success: true, session };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
+// Full player stats for the click-to-inspect modal in Match Info.
+// Auth comes from the VIEWING account — we use its tokens to query any
+// target puuid's MMR / match history.
+ipcMain.handle('get-player-stats', async (event, viewerAccountId, targetPuuid) => {
+    if (!appStore.get('enableMatchInfoFeature', false)) {
+        return { success: false, error: 'Match Info feature is disabled.' };
+    }
+    try {
+        const ctx = await resolveLiveAuthTokens(viewerAccountId);
+        const stats = await gameService.getPlayerStats(ctx, targetPuuid);
+        return { success: true, stats };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
+// Full skin catalog for the "browse skins" wishlist dialog. When called
+// with an accountId, cross-references the static catalog against Riot's
+// live /store/v1/offers to filter out battlepass, VCT, and other non-buyable
+// skins — only keeping items that are actually purchasable with VP.
+// Both the static catalog and the offers list are cached session-lifetime.
+ipcMain.handle('get-skin-catalog', async (event, accountId) => {
+    try {
+        const catalog = await gameService.ensureSkinCatalog();
+        if (!accountId) return { success: true, catalog };
+        try {
+            const ctx = await resolveLiveAuthTokens(accountId);
+            const buyable = await gameService.fetchBuyableSkinOfferIds(ctx);
+            if (buyable.size === 0) {
+                // Offers fetch failed or returned empty — fall back to unfiltered
+                // so the user still sees something.
+                return { success: true, catalog };
+            }
+            const filtered = catalog.filter(s => buyable.has(s.uuid));
+            return { success: true, catalog: filtered };
+        } catch {
+            // Auth failure — still return the unfiltered catalog
+            return { success: true, catalog };
+        }
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
+// --- Store wishlist ---
+// Stored via electron-store as { [skinLevelUuid]: { name, addedAt } }.
+// The renderer checks daily store items against this on fetch and shows a
+// badge when a wishlisted item appears in any account's store.
+ipcMain.handle('get-wishlist', () => {
+    return { success: true, wishlist: appStore.get('storeWishlist', {}) };
+});
+
+ipcMain.handle('add-to-wishlist', (event, { uuid, name }) => {
+    if (!uuid) return { success: false, error: 'uuid required' };
+    const current = appStore.get('storeWishlist', {});
+    current[uuid] = { name: name || 'Unknown Skin', addedAt: Date.now() };
+    appStore.set('storeWishlist', current);
+    return { success: true };
+});
+
+ipcMain.handle('remove-from-wishlist', (event, uuid) => {
+    if (!uuid) return { success: false, error: 'uuid required' };
+    const current = appStore.get('storeWishlist', {});
+    delete current[uuid];
+    appStore.set('storeWishlist', current);
+    return { success: true };
+});
+
+// --- Player blacklist ---
+// Stored via electron-store under the key 'playerBlacklist' as an object
+// keyed by puuid: { [puuid]: { name, reason, addedAt } }. Used by Match Info
+// to warn the user when a previously-flagged player shows up in their match.
+ipcMain.handle('get-blacklist', () => {
+    return { success: true, blacklist: appStore.get('playerBlacklist', {}) };
+});
+
+ipcMain.handle('add-to-blacklist', (event, { puuid, name, reason }) => {
+    if (!puuid) return { success: false, error: 'puuid required' };
+    const current = appStore.get('playerBlacklist', {});
+    current[puuid] = { name: name || 'Unknown', reason: reason || '', addedAt: Date.now() };
+    appStore.set('playerBlacklist', current);
+    return { success: true };
+});
+
+ipcMain.handle('remove-from-blacklist', (event, puuid) => {
+    if (!puuid) return { success: false, error: 'puuid required' };
+    const current = appStore.get('playerBlacklist', {});
+    delete current[puuid];
+    appStore.set('playerBlacklist', current);
     return { success: true };
 });
 

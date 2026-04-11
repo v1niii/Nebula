@@ -1,0 +1,361 @@
+import { useState, useEffect, useMemo } from 'react'
+import { User, Trophy, TrendingUp, Swords, Ban, CheckCircle2 } from 'lucide-react'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Separator } from '@/components/ui/separator'
+import { Skeleton } from '@/components/ui/skeleton'
+import { useToast } from '@/components/ui/toast'
+
+// Placeholder that mirrors the stats dialog layout so the dialog feels full
+// immediately instead of a blank spinner. Mirrors: 2 rank cards → blacklist
+// button → separator → agents chips placeholder → stats grid → match rows.
+function PlayerStatsSkeleton() {
+  return (
+    <div className="space-y-4 pt-1">
+      <div className="grid grid-cols-2 gap-2">
+        <Skeleton className="h-[76px] rounded-md" />
+        <Skeleton className="h-[76px] rounded-md" />
+      </div>
+      <Skeleton className="h-8 rounded-md" />
+      <Separator />
+      <Skeleton className="h-3 w-32" />
+      <Skeleton className="h-[104px] rounded-md" />
+      <div className="space-y-1.5">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="flex items-center gap-2.5 rounded-md border px-2.5 py-2">
+            <Skeleton className="h-8 w-8 rounded shrink-0" />
+            <div className="flex-1 space-y-1.5">
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="h-2.5 w-36" />
+            </div>
+            <Skeleton className="h-4 w-4 shrink-0" />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export function PlayerStatsDialog({ open, onOpenChange, player, viewerAccountId, blacklistEntry, onBlacklistChange }) {
+  const [loading, setLoading] = useState(false)
+  const [stats, setStats] = useState(null)
+  const [showReasonInput, setShowReasonInput] = useState(false)
+  const [reasonText, setReasonText] = useState('')
+  const [agentFilter, setAgentFilter] = useState(null) // agent uuid or null for "all"
+  const toast = useToast()
+
+  useEffect(() => {
+    if (!open) {
+      setShowReasonInput(false)
+      setReasonText('')
+      setAgentFilter(null)
+      return
+    }
+    if (!player?.puuid || !viewerAccountId) return
+    let cancelled = false
+    setStats(null)
+    setLoading(true)
+    window.electronAPI.getPlayerStats(viewerAccountId, player.puuid)
+      .then((result) => {
+        if (cancelled) return
+        if (result.success) setStats(result.stats)
+        else toast.error(result.error || 'Failed to load stats.')
+      })
+      .catch((e) => { if (!cancelled) toast.error(e.message) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [open, player?.puuid, viewerAccountId, toast])
+
+  // Filtered match list: drops anything not matching the agent filter.
+  const filteredMatches = useMemo(() => {
+    const list = stats?.matches ?? []
+    if (!agentFilter) return list
+    return list.filter(m => m.agent?.uuid === agentFilter)
+  }, [stats, agentFilter])
+
+  // Aggregate computed client-side over the filtered list. When the filter
+  // is inactive this matches what the backend returned, but we always
+  // recompute so the agent filter changes the numbers live.
+  const aggregate = useMemo(() => {
+    const list = filteredMatches
+    let wins = 0, losses = 0, k = 0, d = 0, a = 0
+    let acsTotal = 0, acsMatches = 0
+    let hsTotal = 0, hsMatches = 0
+    let adrTotal = 0, adrMatches = 0
+    let ddTotal = 0, ddMatches = 0
+    for (const m of list) {
+      if (m.won) wins++; else losses++
+      k += m.kills; d += m.deaths; a += m.assists
+      if (m.acs) { acsTotal += m.acs; acsMatches++ }
+      if (m.hsPercent) { hsTotal += m.hsPercent; hsMatches++ }
+      if (m.adr) { adrTotal += m.adr; adrMatches++ }
+      if (m.ddDelta) { ddTotal += m.ddDelta; ddMatches++ }
+    }
+    const kd = d > 0 ? Math.round((k / d) * 100) / 100 : k
+    const winRate = (wins + losses) > 0 ? Math.round((wins / (wins + losses)) * 100) : 0
+    return {
+      wins, losses, kills: k, deaths: d, assists: a, kd, winRate,
+      acs: acsMatches > 0 ? Math.round(acsTotal / acsMatches) : 0,
+      hsPercent: hsMatches > 0 ? Math.round(hsTotal / hsMatches) : 0,
+      adr: adrMatches > 0 ? Math.round(adrTotal / adrMatches) : 0,
+      ddDelta: ddMatches > 0 ? Math.round(ddTotal / ddMatches) : 0,
+    }
+  }, [filteredMatches])
+
+  // Unique agents played across all fetched matches — used for filter chips.
+  const agentsPlayed = useMemo(() => {
+    const seen = new Map()
+    for (const m of stats?.matches ?? []) {
+      if (m.agent?.uuid && !seen.has(m.agent.uuid)) {
+        seen.set(m.agent.uuid, { uuid: m.agent.uuid, name: m.agent.name, icon: m.agent.icon })
+      }
+    }
+    return Array.from(seen.values())
+  }, [stats])
+
+  const handleConfirmBlacklist = async () => {
+    try {
+      await window.electronAPI.addToBlacklist({
+        puuid: player.puuid,
+        name: player.name,
+        reason: reasonText.trim(),
+      })
+      toast.success(`${player.name} added to blacklist`)
+      setShowReasonInput(false)
+      setReasonText('')
+      onBlacklistChange && onBlacklistChange()
+    } catch (e) { toast.error(e.message) }
+  }
+
+  const handleRemoveBlacklist = async () => {
+    try {
+      await window.electronAPI.removeFromBlacklist(player.puuid)
+      toast.success(`Removed ${player.name} from blacklist`)
+      onBlacklistChange && onBlacklistChange()
+    } catch (e) { toast.error(e.message) }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <User className="h-4 w-4" />
+            <span className="truncate">{player?.name || 'Player'}</span>
+          </DialogTitle>
+          <DialogDescription>
+            Competitive rank and recent match history
+          </DialogDescription>
+        </DialogHeader>
+
+        {loading && <PlayerStatsSkeleton />}
+
+        {stats && !loading && (
+          <div className="space-y-4 pt-1">
+            {/* Rank cards: larger, with icons, RR, and act name */}
+            <div className="grid grid-cols-2 gap-2">
+              <RankCard label="Current" icon={Trophy} rank={stats.current} showAct />
+              <RankCard label="Peak" icon={TrendingUp} rank={stats.peak} showAct />
+            </div>
+
+            {/* Blacklist control */}
+            {blacklistEntry ? (
+              <div className="rounded-md border border-red-500/50 bg-red-500/10 p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Ban className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                  <p className="text-sm font-semibold text-red-500">Blacklisted</p>
+                </div>
+                {blacklistEntry.reason && (
+                  <p className="text-xs text-muted-foreground pl-5 italic">"{blacklistEntry.reason}"</p>
+                )}
+                <Button variant="outline" onClick={handleRemoveBlacklist} className="w-full gap-1.5 h-8">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Remove from blacklist
+                </Button>
+              </div>
+            ) : !showReasonInput ? (
+              <Button
+                variant="outline"
+                onClick={() => setShowReasonInput(true)}
+                className="w-full gap-1.5 h-8 border-red-500/30 text-red-500 hover:bg-red-500/10"
+              >
+                <Ban className="h-3.5 w-3.5" />
+                Add to blacklist
+              </Button>
+            ) : (
+              <div className="rounded-md border bg-secondary/30 p-3 space-y-2">
+                <label className="text-xs font-medium">Reason (optional)</label>
+                <input
+                  type="text"
+                  value={reasonText}
+                  onChange={(e) => setReasonText(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleConfirmBlacklist() }}
+                  placeholder="e.g. griefer, toxic"
+                  autoFocus
+                  className="w-full h-8 px-2.5 rounded-md border bg-background text-xs focus:outline-none focus:border-purple-500/50 transition-colors"
+                />
+                <div className="flex gap-2">
+                  <Button variant="ghost" onClick={() => { setShowReasonInput(false); setReasonText('') }} className="flex-1 h-8">
+                    Cancel
+                  </Button>
+                  <Button onClick={handleConfirmBlacklist} className="flex-1 h-8 gap-1.5 bg-red-500 hover:bg-red-600 text-white">
+                    <Ban className="h-3.5 w-3.5" />
+                    Blacklist
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            <Separator />
+
+            {/* Match history header */}
+            <div className="flex items-center gap-1.5">
+              <Swords className="h-3.5 w-3.5 text-muted-foreground" />
+              <h3 className="text-sm font-semibold">Recent Competitive</h3>
+              <span className="text-xs text-muted-foreground">({stats.matches.length})</span>
+            </div>
+
+            {/* Aggregate stats over the filtered competitive matches */}
+            <div className="rounded-md border bg-card p-3 space-y-3">
+              <div className="grid grid-cols-4 gap-3 text-center">
+                <StatCell top={<span className="text-green-500">{aggregate.wins}W</span>} bot={`${aggregate.losses}L`} />
+                <StatCell top={`${aggregate.winRate}%`} bot="win rate" />
+                <StatCell top={aggregate.kd} bot="K/D" />
+                <StatCell top={`${aggregate.kills}/${aggregate.deaths}/${aggregate.assists}`} bot="KDA" />
+              </div>
+              <div className="border-t pt-2 grid grid-cols-4 gap-3 text-center">
+                <StatCell top={aggregate.acs || 0} bot="ACS" />
+                <StatCell top={aggregate.adr || 0} bot="ADR" />
+                <StatCell top={`${aggregate.hsPercent || 0}%`} bot="HS%" />
+                <StatCell top={aggregate.ddDelta > 0 ? `+${aggregate.ddDelta}` : (aggregate.ddDelta || 0)} bot="DDΔ" />
+              </div>
+            </div>
+
+            {/* Agent filter chips — only rendered when the player has played
+                multiple agents in the fetched history. */}
+            {agentsPlayed.length > 1 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setAgentFilter(null)}
+                  className={`text-[11px] px-2 py-1 rounded-full border transition-colors ${
+                    !agentFilter
+                      ? 'bg-purple-500/20 border-purple-500/50 text-purple-400'
+                      : 'border-border text-muted-foreground hover:bg-secondary/60'
+                  }`}
+                >
+                  All ({stats.matches.length})
+                </button>
+                {agentsPlayed.map(ag => {
+                  const count = stats.matches.filter(m => m.agent?.uuid === ag.uuid).length
+                  const active = agentFilter === ag.uuid
+                  return (
+                    <button
+                      key={ag.uuid}
+                      type="button"
+                      onClick={() => setAgentFilter(active ? null : ag.uuid)}
+                      className={`text-[11px] px-2 py-1 rounded-full border flex items-center gap-1.5 transition-colors ${
+                        active
+                          ? 'bg-purple-500/20 border-purple-500/50 text-purple-400'
+                          : 'border-border text-muted-foreground hover:bg-secondary/60'
+                      }`}
+                    >
+                      {ag.icon && <img src={ag.icon} alt={ag.name} className="h-3.5 w-3.5 rounded" />}
+                      <span>{ag.name} ({count})</span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* Match list (filtered) */}
+            {filteredMatches.length > 0 ? (
+              <div className="space-y-1.5">
+                {filteredMatches.map((m) => (
+                  <MatchRow key={m.matchId} m={m} />
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground text-center py-4">
+                {agentFilter ? 'No matches on this agent.' : 'No recent competitive matches.'}
+              </p>
+            )}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function RankCard({ label, icon: Icon, rank, showAct = false }) {
+  return (
+    <div className="rounded-md border bg-card p-3">
+      <div className="flex items-center gap-1.5 mb-1.5">
+        <Icon className="h-3 w-3 text-muted-foreground shrink-0" />
+        <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">{label}</p>
+      </div>
+      {rank ? (
+        <div className="flex items-center gap-2">
+          {rank.icon && <img src={rank.icon} alt={rank.name} className="h-10 w-10 shrink-0" />}
+          <div className="min-w-0">
+            <p className="text-sm font-semibold truncate leading-tight">{rank.name}</p>
+            {rank.rr > 0 && <p className="text-xs text-muted-foreground mt-0.5">{rank.rr} RR</p>}
+            {showAct && rank.act && (
+              <p className="text-[10px] text-muted-foreground truncate mt-0.5" title={rank.act}>{rank.act}</p>
+            )}
+          </div>
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">Unranked</p>
+      )}
+    </div>
+  )
+}
+
+function StatCell({ top, bot }) {
+  return (
+    <div>
+      <p className="text-base font-bold leading-tight">{top}</p>
+      <p className="text-[10px] text-muted-foreground uppercase tracking-wide mt-0.5">{bot}</p>
+    </div>
+  )
+}
+
+function MatchRow({ m }) {
+  return (
+    <div
+      className={`flex items-center gap-2.5 rounded-md border px-2.5 py-2 ${
+        m.won ? 'border-green-500/30 bg-green-500/5' : 'border-red-500/30 bg-red-500/5'
+      }`}
+    >
+      {m.agent?.icon && <img src={m.agent.icon} alt={m.agent.name} className="h-8 w-8 rounded shrink-0" />}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <p className="text-xs font-semibold truncate">{m.map}</p>
+          <span className="text-[10px] text-muted-foreground">·</span>
+          <p className="text-[11px] text-muted-foreground truncate">{m.agent?.name || 'Unknown'}</p>
+        </div>
+        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+          <span className="text-[11px] text-muted-foreground">{m.score}</span>
+          <span className="text-[10px] text-muted-foreground">·</span>
+          <span className="text-[11px] text-muted-foreground">{m.kills}/{m.deaths}/{m.assists}</span>
+          {m.acs > 0 && <>
+            <span className="text-[10px] text-muted-foreground">·</span>
+            <span className="text-[11px] text-muted-foreground">{m.acs} ACS</span>
+          </>}
+          {m.adr > 0 && <>
+            <span className="text-[10px] text-muted-foreground">·</span>
+            <span className="text-[11px] text-muted-foreground">{m.adr} ADR</span>
+          </>}
+          {m.hsPercent > 0 && <>
+            <span className="text-[10px] text-muted-foreground">·</span>
+            <span className="text-[11px] text-muted-foreground">{m.hsPercent}% HS</span>
+          </>}
+        </div>
+      </div>
+      <div className={`text-sm font-bold ${m.won ? 'text-green-500' : 'text-red-500'}`}>
+        {m.won ? 'W' : 'L'}
+      </div>
+    </div>
+  )
+}

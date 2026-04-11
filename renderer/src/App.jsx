@@ -4,6 +4,7 @@ import { ToastProvider, useToast } from '@/components/ui/toast'
 import { useAccounts } from '@/hooks/useAccounts'
 import { useLaunchStatus } from '@/hooks/useLaunchStatus'
 import { Header } from '@/components/Header'
+import { SideMenu } from '@/components/SideMenu'
 import { AccountList } from '@/components/AccountList'
 import { AddAccountSection } from '@/components/AddAccountSection'
 import { SettingsDialog } from '@/components/SettingsDialog'
@@ -11,19 +12,34 @@ import { CopySettingsDialog } from '@/components/CopySettingsDialog'
 import { NicknameDialog } from '@/components/NicknameDialog'
 import { Footer } from '@/components/Footer'
 import { CloseDialog } from '@/components/CloseDialog'
+import { StoreTab } from '@/components/StoreTab'
+import { MatchInfoTab } from '@/components/MatchInfoTab'
 
 function AppContent() {
   const { accounts, loading, fetchAccounts, removeAccount, loginWithRiot, importAccount, launchValorant, setNickname, reorderAccounts, checkSession } = useAccounts()
   const { statuses, setStatus } = useLaunchStatus()
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [activeTab, setActiveTab] = useState('accounts')
+  const [features, setFeatures] = useState({ store: false, matchInfo: false })
+  const [accountRanks, setAccountRanks] = useState({}) // accountId → { current, peak }
+  const [accountSessions, setAccountSessions] = useState({}) // accountId → today's stats
   const [copyTarget, setCopyTarget] = useState(null)
   const [nicknameTarget, setNicknameTarget] = useState(null)
   const [appStatus, setAppStatus] = useState('Ready')
   const toast = useToast()
 
+  // Refresh feature flags — called on mount and after saving settings so the
+  // hamburger menu and active tab react to the toggles immediately.
+  const refreshFeatures = useCallback(async () => {
+    const s = await window.electronAPI.getSettings()
+    setFeatures({ store: !!s.enableStoreFeature, matchInfo: !!s.enableMatchInfoFeature })
+    return s
+  }, [])
+
   useEffect(() => {
     fetchAccounts()
-    window.electronAPI.getSettings().then(s => {
+    refreshFeatures().then(s => {
       if (!s.riotClientPath) {
         toast.error('Riot Client not found. Make sure Riot Games is installed.')
       }
@@ -90,32 +106,88 @@ function AppContent() {
     await reorderAccounts(orderedIds)
   }, [reorderAccounts])
 
+  // If the currently-active tab gets disabled in settings, snap back to accounts.
+  useEffect(() => {
+    if (activeTab === 'store' && !features.store) setActiveTab('accounts')
+    if (activeTab === 'match' && !features.matchInfo) setActiveTab('accounts')
+  }, [features, activeTab])
+
+  // Fetch rank badges and session stats for every account. Both run
+  // sequentially per-account to be polite to the PD/MMR endpoints, cached in
+  // component state so tab switches never re-fetch. Silently skips accounts
+  // that fail (expired session, network error, etc.). Runs once per account
+  // list change — add/remove/reorder triggers a fresh walk.
+  useEffect(() => {
+    if (!accounts.length) { setAccountRanks({}); setAccountSessions({}); return }
+    let cancelled = false
+    ;(async () => {
+      for (const acc of accounts) {
+        if (cancelled) return
+        if (!accountRanks[acc.id]) {
+          try {
+            const r = await window.electronAPI.getAccountRank(acc.id)
+            if (cancelled) return
+            if (r.success && r.rank) setAccountRanks(prev => ({ ...prev, [acc.id]: r.rank }))
+          } catch { /* silent */ }
+        }
+        if (!accountSessions[acc.id]) {
+          try {
+            const s = await window.electronAPI.getSessionStats(acc.id)
+            if (cancelled) return
+            if (s.success && s.session) setAccountSessions(prev => ({ ...prev, [acc.id]: s.session }))
+          } catch { /* silent */ }
+        }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [accounts]) // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <div className="h-screen overflow-hidden p-4 flex flex-col">
       <div className="w-full flex flex-col flex-1 min-h-0 animate-fade-in">
-        <Header onOpenSettings={() => setSettingsOpen(true)} />
+        <Header
+          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenMenu={() => setMenuOpen(true)}
+          activeTab={activeTab}
+        />
 
-        <div className="flex-1 min-h-0 flex flex-col gap-4">
-          <div className="flex-1 min-h-0">
-            <AccountList
-              accounts={accounts}
-              loading={loading}
-              statuses={statuses}
-              onLaunch={handleLaunch}
-              onRemove={handleRemove}
-              onCopySettings={setCopyTarget}
-              onSetNickname={setNicknameTarget}
-              onCheckSession={checkSession}
-              onReorder={handleReorder}
-            />
-          </div>
-          <div className="shrink-0">
-            <AddAccountSection onLogin={handleLogin} onImport={handleImport} />
-          </div>
+        {/* key on activeTab remounts children so the fade-in replays on every tab switch */}
+        <div key={activeTab} className="flex-1 min-h-0 flex flex-col gap-4 animate-fade-in">
+          {activeTab === 'accounts' && (
+            <>
+              <div className="flex-1 min-h-0">
+                <AccountList
+                  accounts={accounts}
+                  loading={loading}
+                  statuses={statuses}
+                  ranks={accountRanks}
+                  sessions={accountSessions}
+                  onLaunch={handleLaunch}
+                  onRemove={handleRemove}
+                  onCopySettings={setCopyTarget}
+                  onSetNickname={setNicknameTarget}
+                  onCheckSession={checkSession}
+                  onReorder={handleReorder}
+                />
+              </div>
+              <div className="shrink-0">
+                <AddAccountSection onLogin={handleLogin} onImport={handleImport} />
+              </div>
+            </>
+          )}
+          {activeTab === 'store' && features.store && <StoreTab accounts={accounts} />}
+          {activeTab === 'match' && features.matchInfo && <MatchInfoTab accounts={accounts} />}
         </div>
 
         <Footer status={appStatus} />
-        <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+        <SideMenu
+          open={menuOpen}
+          onOpenChange={setMenuOpen}
+          activeTab={activeTab}
+          onSelectTab={setActiveTab}
+          features={features}
+        />
+        <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} onSaved={refreshFeatures} />
         <CopySettingsDialog open={!!copyTarget} onOpenChange={(o) => { if (!o) setCopyTarget(null) }} targetAccount={copyTarget} accounts={accounts} />
         <NicknameDialog open={!!nicknameTarget} onOpenChange={(o) => { if (!o) setNicknameTarget(null) }} account={nicknameTarget} onSave={handleSetNickname} />
         <CloseDialog />
