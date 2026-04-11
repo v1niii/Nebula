@@ -98,6 +98,13 @@ const KEY_PATTERNS = {
     keybinds: [],
 };
 
+// Categories that should use ADDITIVE semantics instead of mirror semantics.
+// For these, keys present in target but missing from source are LEFT ALONE
+// (not wiped). Only appropriate for "blob" keys where absence ≠ default —
+// e.g. SavedCrosshairProfileData holds every saved crosshair profile as one
+// serialized string, so a missing source value shouldn't nuke target's list.
+const ADDITIVE_CATEGORIES = new Set(['crosshair']);
+
 // Defense-in-depth: never copy these keys regardless of category. Account-bound,
 // progress flags, machine-local identifiers, region pinning, etc. Copying any of
 // these across accounts is what gets you the "VALORANT failed to launch" / temporary
@@ -574,7 +581,11 @@ class AuthLaunchService {
     //     (Valorant will recreate them at default on next launch — matches source's
     //     implicit default, since Valorant only persists non-default values)
     //   - keys NOT matching the pattern → left alone
-    async mergeIniKeys(fromPuuid, toPuuid, fileName, keyPatterns) {
+    // `additivePatterns` (optional) names a subset of keyPatterns whose matching
+    // keys are copied-if-present but NEVER wiped — used for blob keys like
+    // SavedCrosshairProfileData where an absent source value shouldn't nuke
+    // target's saved profiles.
+    async mergeIniKeys(fromPuuid, toPuuid, fileName, keyPatterns, additivePatterns = []) {
         const { src, dst } = await this._resolveValorantConfigDirs(fromPuuid, toPuuid);
         const srcPath = path.join(src, fileName);
         const dstPath = path.join(dst, fileName);
@@ -584,6 +595,7 @@ class AuthLaunchService {
 
         const isExcluded = (key) => EXCLUDE_KEY_PATTERNS.some(p => key.toLowerCase().includes(p.toLowerCase()));
         const matches = (key) => !isExcluded(key) && keyPatterns.some(p => key.toLowerCase().includes(p.toLowerCase()));
+        const isAdditive = (key) => additivePatterns.some(p => key.toLowerCase().includes(p.toLowerCase()));
 
         // Parse source into { section: { key: rawLine } }. Section tracking is
         // per-pattern — most Riot config uses a single [Settings] section anyway.
@@ -626,6 +638,9 @@ class AuthLaunchService {
                         outLines.push(srcLine);
                         consumed.add(`${tgtSection}::${key}`);
                         merged++;
+                    } else if (isAdditive(key)) {
+                        // Additive category — keep target's value when source has none.
+                        outLines.push(rawLine);
                     } else {
                         // Matching pattern but not in source → drop it (Valorant will re-default on launch)
                         removed++;
@@ -698,4 +713,4 @@ class AuthLaunchService {
     }
 }
 
-module.exports = { AuthLaunchService, KEY_PATTERNS, EXCLUDE_KEY_PATTERNS };
+module.exports = { AuthLaunchService, KEY_PATTERNS, EXCLUDE_KEY_PATTERNS, ADDITIVE_CATEGORIES };

@@ -405,7 +405,7 @@ class AuthService {
   // This handles the common case where Valorant only persists non-default values
   // (e.g. MouseSensitivityADS=1.0 is never written, so source's cloud+local are
   // both missing it; target's old custom value must be wiped to match).
-  mergeSelectiveSettings(sourceSettings, targetSettings, categories, patterns, excludePatterns = []) {
+  mergeSelectiveSettings(sourceSettings, targetSettings, categories, patterns, excludePatterns = [], additiveCategories = new Set()) {
     const merged = JSON.parse(JSON.stringify(targetSettings));
     const exclude = excludePatterns;
 
@@ -417,7 +417,12 @@ class AuthService {
       merged.axisMappings = sourceSettings.axisMappings || merged.axisMappings;
     }
 
-    const mirrorArray = (arrayName, pats) => {
+    // `additive` skips the mirror-wipe step: target keys that match the pattern
+    // but aren't in source are preserved instead of being removed. Used for
+    // blob keys like SavedCrosshairProfileData where target's saved profiles
+    // shouldn't be deleted just because source happens not to have customized
+    // them.
+    const mergeArray = (arrayName, pats, additive) => {
       if (!merged[arrayName]) merged[arrayName] = [];
       const srcArr = sourceSettings[arrayName] || [];
       const srcKeysForPattern = new Set(
@@ -426,14 +431,16 @@ class AuthService {
           .map(s => s.settingEnum)
       );
 
-      // 1. Remove target keys that match the pattern but aren't in source (mirror wipe).
-      merged[arrayName] = merged[arrayName].filter(s => {
-        if (!s.settingEnum) return true;
-        if (!matchesAny(s.settingEnum, pats)) return true;     // not our category, leave alone
-        return srcKeysForPattern.has(s.settingEnum);            // drop if source doesn't have it
-      });
+      if (!additive) {
+        // Mirror wipe — remove target keys that match the pattern but aren't in source.
+        merged[arrayName] = merged[arrayName].filter(s => {
+          if (!s.settingEnum) return true;
+          if (!matchesAny(s.settingEnum, pats)) return true;
+          return srcKeysForPattern.has(s.settingEnum);
+        });
+      }
 
-      // 2. Overwrite or append source values for matching keys.
+      // Overwrite or append source values for matching keys.
       for (const src of srcArr) {
         if (!src.settingEnum || !matchesAny(src.settingEnum, pats)) continue;
         const idx = merged[arrayName].findIndex(s => s.settingEnum === src.settingEnum);
@@ -446,10 +453,11 @@ class AuthService {
       if (!enabled || cat === 'keybinds') continue;
       const pats = patterns[cat];
       if (!pats || !pats.length) continue;
-      mirrorArray('floatSettings', pats);
-      mirrorArray('boolSettings', pats);
-      mirrorArray('stringSettings', pats);
-      mirrorArray('intSettings', pats);
+      const additive = additiveCategories.has(cat);
+      mergeArray('floatSettings', pats, additive);
+      mergeArray('boolSettings', pats, additive);
+      mergeArray('stringSettings', pats, additive);
+      mergeArray('intSettings', pats, additive);
     }
 
     return merged;

@@ -7,7 +7,7 @@ const store = require('electron-store');
 app.setName('Nebula');
 if (process.platform === 'win32') app.setAppUserModelId('com.v1niii.nebula');
 const { AuthService } = require('./auth-service');
-const { AuthLaunchService, KEY_PATTERNS, EXCLUDE_KEY_PATTERNS } = require('./auth-launch-service');
+const { AuthLaunchService, KEY_PATTERNS, EXCLUDE_KEY_PATTERNS, ADDITIVE_CATEGORIES } = require('./auth-launch-service');
 const gameService = require('./game-service');
 
 const appStore = new store({ clearInvalidConfig: true });
@@ -177,6 +177,14 @@ if (!gotTheLock) {
         // mappings that persist forever.
         const nameCachePath = path.join(app.getPath('userData'), 'name-cache.json');
         gameService.loadNameCache(nameCachePath).catch(() => {});
+
+        // Proactive region self-heal: some accounts stick to a wrong stored
+        // region because their live-API calls (rank, store) never succeed
+        // on this session and so never flow through resolveLiveAuthTokens.
+        // Walk every account once at startup, ask PAS for the real Valorant
+        // region, and update the store. Silent on failure — accounts with
+        // expired sessions are simply skipped and retried on next launch.
+        setTimeout(() => { scanAllAccountRegions().catch(() => {}); }, 2000);
 
         app.on('activate', () => {
             if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -357,9 +365,10 @@ ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) =>
         // guess from import time.
         const healRegion = async (accountId, current) => {
             if (regionVerifiedThisSession.has(accountId)) return current;
-            regionVerifiedThisSession.add(accountId);
             const pas = await authService._getValorantRegionFromPas(accountId === fromId ? srcAuth.accessToken : dstAuth.accessToken);
-            if (pas && pas !== current) {
+            if (!pas) return current; // don't burn the retry budget on a failed PAS call
+            regionVerifiedThisSession.add(accountId);
+            if (pas !== current) {
                 authService.updateAccountRegion(accountId, pas);
                 return pas;
             }
@@ -370,11 +379,16 @@ ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) =>
 
         // Build the flat list of pattern strings for every enabled category (used by
         // both the cloud backfill and the local .ini merge — keeps them in lockstep).
+        // `additivePatterns` is a strict subset containing only the patterns whose
+        // target values should never be wiped when source is empty (crosshair blob).
         const allCatKeys = Object.keys(KEY_PATTERNS);
         const cats = categories || Object.fromEntries(allCatKeys.map(k => [k, true]));
         const enabledPatterns = [];
+        const additivePatterns = [];
         for (const cat of allCatKeys) {
-            if (cats[cat] && KEY_PATTERNS[cat]?.length) enabledPatterns.push(...KEY_PATTERNS[cat]);
+            if (!cats[cat] || !KEY_PATTERNS[cat]?.length) continue;
+            enabledPatterns.push(...KEY_PATTERNS[cat]);
+            if (ADDITIVE_CATEGORIES.has(cat)) additivePatterns.push(...KEY_PATTERNS[cat]);
         }
 
         const [srcBlob, dstBlob] = await Promise.all([
@@ -401,7 +415,7 @@ ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) =>
             }
         }
 
-        const merged = authService.mergeSelectiveSettings(srcSettings, dstSettings, cats, KEY_PATTERNS, EXCLUDE_KEY_PATTERNS);
+        const merged = authService.mergeSelectiveSettings(srcSettings, dstSettings, cats, KEY_PATTERNS, EXCLUDE_KEY_PATTERNS, ADDITIVE_CATEGORIES);
         const newData = authService._encodeSettingsBlob(merged, method);
         await authService.putCloudSettings(dstAuth.accessToken, dstAuth.entitlementsToken, toAcc.region, { data: newData });
 
@@ -411,7 +425,7 @@ ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) =>
         let localMergeWarning = null;
         if (enabledPatterns.length) {
             try {
-                const localResult = await authLaunchService.mergeIniKeys(fromId, toId, 'RiotUserSettings.ini', enabledPatterns);
+                const localResult = await authLaunchService.mergeIniKeys(fromId, toId, 'RiotUserSettings.ini', enabledPatterns, additivePatterns);
                 if (localResult.merged === 0 && localResult.removed === 0) {
                     localMergeWarning = 'Local file merge touched 0 keys — target account may have never launched Valorant on this PC.';
                 }
@@ -492,16 +506,65 @@ async function resolveLiveAuthTokens(accountId) {
 
     let region = account.region;
     if (!regionVerifiedThisSession.has(accountId)) {
-        regionVerifiedThisSession.add(accountId);
         const pasRegion = await authService._getValorantRegionFromPas(accessToken);
-        if (pasRegion && pasRegion !== region) {
-            console.log(`[main] region self-heal: ${account.displayName || accountId.slice(0, 8)} ${region} → ${pasRegion}`);
-            authService.updateAccountRegion(accountId, pasRegion);
-            region = pasRegion;
+        if (pasRegion) {
+            // Only burn the one-shot retry budget on a SUCCESSFUL PAS response.
+            // Silent PAS failures (network, rate-limit, 401) previously marked
+            // the account verified and blocked further attempts this session.
+            regionVerifiedThisSession.add(accountId);
+            if (pasRegion !== region) {
+                console.log(`[main] region self-heal: ${account.displayName || accountId.slice(0, 8)} ${region} → ${pasRegion}`);
+                authService.updateAccountRegion(accountId, pasRegion);
+                region = pasRegion;
+            }
+        } else {
+            console.warn(`[main] PAS region check failed for ${account.displayName || accountId.slice(0, 8)} — will retry on next call`);
         }
     }
 
     return { accessToken, entitlementsToken, puuid: account.id, region };
+}
+
+// Walk every stored account and ask PAS for the real Valorant region.
+// Runs once shortly after startup so broken/stale region labels get fixed
+// without waiting for the user to trigger a live-API call on each account.
+// Silent per-account failures — any account we can't get tokens for is
+// skipped and retried next launch.
+async function scanAllAccountRegions() {
+    const accounts = authService.getAccountsList?.() || authService.accounts || [];
+    if (!accounts.length) return;
+    console.log(`[main] region scan: checking PAS for ${accounts.length} account(s)`);
+    let healed = 0, failed = 0;
+    for (const acc of accounts) {
+        if (regionVerifiedThisSession.has(acc.id)) continue;
+        try {
+            const stored = await authService.retrieveCookiesSecurely(acc.id);
+            let cookies = stored?.ssid ? stored : null;
+            if (!cookies) {
+                const snap = await authLaunchService.extractCookiesFromSnapshot(acc.id);
+                if (snap?.ssid) cookies = snap;
+            }
+            if (!cookies?.ssid) { failed++; continue; }
+            const { accessToken } = await authService.getCloudAuthTokens(
+                cookies.ssid, cookies.clid, cookies.csid, cookies.tdid
+            );
+            const pasRegion = await authService._getValorantRegionFromPas(accessToken);
+            if (!pasRegion) { failed++; continue; }
+            regionVerifiedThisSession.add(acc.id);
+            if (pasRegion !== acc.region) {
+                console.log(`[main] region scan heal: ${acc.displayName || acc.id.slice(0, 8)} ${acc.region} → ${pasRegion}`);
+                authService.updateAccountRegion(acc.id, pasRegion);
+                healed++;
+            }
+        } catch (e) {
+            failed++;
+        }
+    }
+    console.log(`[main] region scan done: ${healed} healed, ${failed} skipped`);
+    // Stored regions are fixed immediately; the renderer's account-list badge
+    // catches up on the next fetch (launch, refresh, tab switch). Every live
+    // API call reads region straight from `resolveLiveAuthTokens`, which
+    // already uses the healed value — no stale data leaks into the backend.
 }
 
 ipcMain.handle('get-store', async (event, accountId) => {
