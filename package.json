@@ -1,6 +1,6 @@
 {
   "name": "nebula",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "description": "Manage multiple Valorant accounts easily.",
   "main": "main.js",
   "scripts": {
@@ -47,6 +47,7 @@
       "preload.js",
       "auth-service.js",
       "auth-launch-service.js",
+      "game-service.js",
       "renderer/dist/**/*",
       "assets/**/*",
       "node_modules/**/*",
