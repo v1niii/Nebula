@@ -77,8 +77,6 @@ npm start
 - **Tailwind CSS + shadcn/ui** — Styling + animated skeletons
 - **safeStorage (DPAPI)** — Cookie encryption
 - **electron-updater** — Auto-updates
-- **valorant-api.com** — Unauthenticated content (agents, maps, skins, ranks, cards, seasons, bundles)
-- **Riot PD / GLZ APIs** — Storefront, entitlements, match history, MMR, parties, name-service *(opt-in only)*
 
 ## Data & Privacy
 
