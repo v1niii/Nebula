@@ -56,47 +56,14 @@ function findBlacklistEntry(blacklist, player) {
   return blacklist[player.puuid] || null
 }
 
-// Party color palette — cycled through for distinct partyIds in a match.
-// Only applied when ≥2 players share a partyId (solo-queue partyIds are
-// still unique but uninteresting to highlight).
-const PARTY_COLORS = [
-  'border-l-purple-500',
-  'border-l-cyan-500',
-  'border-l-orange-500',
-  'border-l-pink-500',
-  'border-l-yellow-500',
-]
-
-// Given a list of players, returns a Map<partyId, colorClass> for every
-// party of size ≥2. Single-player "parties" are omitted so solo queuers get
-// no color strip.
-function assignPartyColors(allPlayers) {
-  const counts = new Map()
-  for (const p of allPlayers) {
-    if (!p?.partyId) continue
-    counts.set(p.partyId, (counts.get(p.partyId) || 0) + 1)
-  }
-  const colors = new Map()
-  let i = 0
-  for (const [partyId, count] of counts) {
-    if (count >= 2) {
-      colors.set(partyId, PARTY_COLORS[i % PARTY_COLORS.length])
-      i++
-    }
-  }
-  return colors
-}
-
 // User's own player card banner. Clickable — opens the same stats dialog
 // you'd see for any other player. No background splash art (user request).
-// Gets a colored left border when the viewing player is in a party.
-function SelfBanner({ self, onClick, partyColor }) {
-  const partyBorder = partyColor ? `border-l-[3px] ${partyColor}` : ''
+function SelfBanner({ self, onClick }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`w-full flex items-center gap-3 rounded-md border bg-card/60 p-3 text-left transition-colors duration-150 hover:border-purple-500/30 hover:bg-card ${partyBorder}`}
+      className="w-full flex items-center gap-3 rounded-md border bg-card/60 p-3 text-left transition-colors duration-150 hover:border-purple-500/30 hover:bg-card"
     >
       {self.agent?.icon ? (
         <img src={self.agent.icon} alt={self.agent.name} className="h-12 w-12 rounded shrink-0 border border-border" />
@@ -125,15 +92,12 @@ function SelfBanner({ self, onClick, partyColor }) {
   )
 }
 
-function PlayerRow({ p, blacklisted, partyColor, onClick, onCopy }) {
+function PlayerRow({ p, blacklisted, onClick, onCopy }) {
   const handleCopy = (e) => {
     e.stopPropagation()
     onCopy(p.name)
   }
-  // 3px left border indicates party membership. Applied via dynamic tailwind
-  // class; empty when solo.
-  const partyBorder = partyColor ? `border-l-[3px] ${partyColor}` : ''
-  const base = `group w-full flex items-center gap-2.5 rounded-md border px-2.5 py-2 text-left transition-colors duration-150 ${partyBorder}`
+  const base = 'group w-full flex items-center gap-2.5 rounded-md border px-2.5 py-2 text-left transition-colors duration-150'
   const skin = blacklisted
     ? 'border-red-500/50 bg-red-500/10 hover:bg-red-500/15'
     : 'bg-card/50 hover:border-purple-500/30 hover:bg-card'
@@ -184,7 +148,7 @@ function PlayerRow({ p, blacklisted, partyColor, onClick, onCopy }) {
   )
 }
 
-function TeamPanel({ title, players, accent, icon: Icon, blacklist, partyColors, onPlayerClick, onCopy }) {
+function TeamPanel({ title, players, accent, icon: Icon, blacklist, onPlayerClick, onCopy }) {
   return (
     <div className="flex-1 min-w-0 space-y-2">
       <div className="flex items-center gap-1.5">
@@ -199,7 +163,6 @@ function TeamPanel({ title, players, accent, icon: Icon, blacklist, partyColors,
                 key={p.puuid}
                 p={p}
                 blacklisted={findBlacklistEntry(blacklist, p)}
-                partyColor={partyColors?.get(p.partyId)}
                 onClick={() => onPlayerClick(p)}
                 onCopy={onCopy}
               />
@@ -260,14 +223,6 @@ export function MatchInfoTab({ accounts }) {
     const all = [match.self, ...(match.ally || []), ...(match.enemy || [])].filter(Boolean)
     return all.map(p => ({ p, entry: findBlacklistEntry(blacklist, p) })).filter(x => x.entry)
   }, [match, blacklist])
-
-  // Party color map — distinct colors per premade group (size ≥2). Computed
-  // once per match load, covers both teams.
-  const partyColors = useMemo(() => {
-    if (!match?.inMatch) return new Map()
-    const all = [match.self, ...(match.ally || []), ...(match.enemy || [])].filter(Boolean)
-    return assignPartyColors(all)
-  }, [match])
 
   // Warn whenever a fresh match load contains one or more blacklisted players.
   useEffect(() => {
@@ -363,7 +318,6 @@ export function MatchInfoTab({ accounts }) {
           {match.self && (
             <SelfBanner
               self={match.self}
-              partyColor={partyColors?.get(match.self.partyId)}
               onClick={() => setSelectedPlayer(match.self)}
             />
           )}
@@ -378,7 +332,6 @@ export function MatchInfoTab({ accounts }) {
               accent="text-muted-foreground"
               icon={Swords}
               blacklist={blacklist}
-              partyColors={partyColors}
               onPlayerClick={setSelectedPlayer}
               onCopy={handleCopyName}
             />
@@ -390,7 +343,6 @@ export function MatchInfoTab({ accounts }) {
                 accent="text-green-500"
                 icon={Shield}
                 blacklist={blacklist}
-                partyColors={partyColors}
                 onPlayerClick={setSelectedPlayer}
                 onCopy={handleCopyName}
               />
@@ -401,7 +353,6 @@ export function MatchInfoTab({ accounts }) {
                   accent="text-red-500"
                   icon={Crosshair}
                   blacklist={blacklist}
-                  partyColors={partyColors}
                   onPlayerClick={setSelectedPlayer}
                   onCopy={handleCopyName}
                 />

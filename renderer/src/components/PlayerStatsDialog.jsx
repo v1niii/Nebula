@@ -158,8 +158,8 @@ export function PlayerStatsDialog({ open, onOpenChange, player, viewerAccountId,
               <RankCard label="Peak" icon={TrendingUp} rank={stats.peak} showAct />
             </div>
 
-            {/* Blacklist control */}
-            {blacklistEntry ? (
+            {/* Blacklist control — hidden when viewing yourself */}
+            {player?.puuid === viewerAccountId ? null : blacklistEntry ? (
               <div className="rounded-md border border-red-500/50 bg-red-500/10 p-3 space-y-2">
                 <div className="flex items-center gap-2">
                   <Ban className="h-3.5 w-3.5 text-red-500 shrink-0" />

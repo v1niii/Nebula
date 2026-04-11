@@ -666,8 +666,6 @@ async function populateNameCacheFromHistory(ctx) {
 
     const matchIds = await fetchMatchHistory(ctx, 20);
     if (!matchIds.length) return;
-    // Skip matches we already have details for — saves up to 20 HTTP calls
-    // per populate once the cache is warm.
     const newMatchIds = matchIds.filter(id => !processedMatches.has(id));
     if (!newMatchIds.length) {
         console.log(`[game] name cache: no new matches (${matchIds.length} already processed)`);
@@ -676,7 +674,7 @@ async function populateNameCacheFromHistory(ctx) {
     console.log(`[game] name cache: fetching ${newMatchIds.length} new match(es), skipping ${matchIds.length - newMatchIds.length} already-processed`);
 
     const detailsList = await Promise.all(newMatchIds.map(id => fetchMatchDetails(ctx, id)));
-    let added = 0;
+    let changed = 0;
     let withName = 0, withoutName = 0;
     for (let i = 0; i < newMatchIds.length; i++) {
         processedMatches.add(newMatchIds[i]);
@@ -688,16 +686,20 @@ async function populateNameCacheFromHistory(ctx) {
             const tagLine = p.tagLine || p.TagLine;
             if (!subject) continue;
             if (gameName) {
-                if (!nameCache.has(subject)) added++;
-                nameCache.set(subject, { gameName, tagLine: tagLine || '' });
+                const existing = nameCache.get(subject);
+                const newTag = tagLine || '';
+                if (!existing || existing.gameName !== gameName || (existing.tagLine || '') !== newTag) {
+                    nameCache.set(subject, { gameName, tagLine: newTag });
+                    changed++;
+                }
                 withName++;
             } else {
                 withoutName++;
             }
         }
     }
-    if (added) {
-        console.log(`[game] name cache: +${added} new entries (with=${withName} without=${withoutName}, total=${nameCache.size})`);
+    if (changed) {
+        console.log(`[game] name cache: ${changed} new/updated entries (with=${withName} without=${withoutName}, total=${nameCache.size})`);
         nameCacheDirty = true;
         scheduleSaveCache();
     }
@@ -846,60 +848,6 @@ async function resolveNames({ accessToken, entitlementsToken, region, puuids }) 
     return map;
 }
 
-// Party detection — only works for the VIEWING player's own party.
-// /parties/v1/players/{puuid} is restricted to self; calling it for other
-// players returns 403/404. So we:
-//   1. Call it once for ourselves → get CurrentPartyID
-//   2. Call /parties/v1/parties/{partyId} → get member list
-//   3. Return a Set<puuid> of our party members (including ourselves)
-// Enemy/other-party detection genuinely isn't exposed by any Riot endpoint.
-const myPartyCache = new Map(); // selfPuuid → { members, cachedAt }
-const MY_PARTY_TTL_MS = 60 * 1000;
-
-async function resolveMyPartyMembers({ accessToken, entitlementsToken, region, puuid }) {
-    const cached = myPartyCache.get(puuid);
-    if (cached && Date.now() - cached.cachedAt < MY_PARTY_TTL_MS) return cached.members;
-
-    const headers = await authHeaders(accessToken, entitlementsToken);
-    const players = new Set();
-    try {
-        // Step 1: my party id
-        const playerUrl = `${glzUrl(region)}/parties/v1/players/${puuid}`;
-        const playerRes = await fetchWithRetry(playerUrl, { headers });
-        if (!playerRes.ok) {
-            logCall('parties.me', 'GET', playerUrl, playerRes.status);
-            myPartyCache.set(puuid, { members: players, cachedAt: Date.now() });
-            return players;
-        }
-        const playerData = await playerRes.json();
-        const partyId = playerData?.CurrentPartyID;
-        if (!partyId) {
-            myPartyCache.set(puuid, { members: players, cachedAt: Date.now() });
-            return players;
-        }
-
-        // Step 2: party member list
-        const partyUrl = `${glzUrl(region)}/parties/v1/parties/${partyId}`;
-        const partyRes = await fetchWithRetry(partyUrl, { headers });
-        if (!partyRes.ok) {
-            logCall('parties.party', 'GET', partyUrl, partyRes.status);
-            myPartyCache.set(puuid, { members: players, cachedAt: Date.now() });
-            return players;
-        }
-        const partyData = await partyRes.json();
-        for (const m of partyData?.Members || []) {
-            const sub = m.Subject ?? m.subject;
-            if (sub) players.add(sub);
-        }
-        logCall('parties.party', 'GET', partyUrl, partyRes.status, `members=${players.size}`);
-    } catch (e) {
-        console.warn(`[game] my party resolution error: ${e.message}`);
-    }
-
-    myPartyCache.set(puuid, { members: players, cachedAt: Date.now() });
-    return players;
-}
-
 // Optional rank lookup — one call per player. Cached for 60s so rapid
 // manual refreshes of Match Info don't re-fetch MMR for every player.
 async function resolveRank({ accessToken, entitlementsToken, region, puuid }) {
@@ -972,15 +920,11 @@ async function getMatchInfo({ accessToken, entitlementsToken, region, puuid }, o
     // the starting side. Confirmed against vRY's reference implementation.
     const yourSide = yourTeam === 'Red' ? 'Attack' : 'Defense';
 
-    // Fetch names + ranks + MY party in parallel. Only our own party is
-    // queryable — Riot doesn't expose other players' parties via any public
-    // endpoint. Match Info highlights members of YOUR party with a colored
-    // left border; enemy/other premades remain undetectable.
+    // Fetch names + ranks in parallel.
     const allPuuids = [...rawAllyPlayers, ...rawEnemyPlayers].map(p => p.Subject).filter(Boolean);
-    const [names, rankResults, myPartyMembers] = await Promise.all([
+    const [names, rankResults] = await Promise.all([
         resolveNames({ accessToken, entitlementsToken, region, puuids: allPuuids }),
         Promise.all(allPuuids.map(p => resolveRank({ accessToken, entitlementsToken, region, puuid: p }))),
-        resolveMyPartyMembers({ accessToken, entitlementsToken, region, puuid }),
     ]);
     const rankByPuuid = {};
     allPuuids.forEach((p, i) => { rankByPuuid[p] = rankResults[i]; });
@@ -1083,12 +1027,6 @@ async function getMatchInfo({ accessToken, entitlementsToken, region, puuid }, o
         const tier = rank?.tier || 0;
         const isSmurf = level > 0 && level < 40 && tier >= 17; // Diamond 1+ under level 40
 
-        // Party membership — only "my party" is detectable via Riot's API.
-        // Players in the same party get a synthetic partyId 'my-party' so
-        // the frontend colors them identically. Enemy/other parties are
-        // undetectable and will always render without a party border.
-        const partyId = myPartyMembers.has(p.Subject) ? 'my-party' : null;
-
         return {
             puuid: p.Subject,
             name: displayName,
@@ -1099,7 +1037,6 @@ async function getMatchInfo({ accessToken, entitlementsToken, region, puuid }, o
             accountLevel: level,
             card: cardMeta ? { id: cardId, wide: cardMeta.wide, large: cardMeta.large } : null,
             isSmurf,
-            partyId,
         };
     };
 
