@@ -103,15 +103,21 @@ export function PlayerStatsDialog({ open, onOpenChange, player, viewerAccountId,
     }
   }, [filteredMatches])
 
-  // Unique agents played across all fetched matches — used for filter chips.
-  const agentsPlayed = useMemo(() => {
+  // Unique agents played + per-agent match counts. Computed once per stats
+  // change instead of inside the chip render loop (which used to re-filter
+  // the entire match list per chip on every render — O(agents × matches)).
+  const { agentsPlayed, agentCounts } = useMemo(() => {
     const seen = new Map()
+    const counts = {}
     for (const m of stats?.matches ?? []) {
-      if (m.agent?.uuid && !seen.has(m.agent.uuid)) {
-        seen.set(m.agent.uuid, { uuid: m.agent.uuid, name: m.agent.name, icon: m.agent.icon })
+      const uuid = m.agent?.uuid
+      if (!uuid) continue
+      if (!seen.has(uuid)) {
+        seen.set(uuid, { uuid, name: m.agent.name, icon: m.agent.icon })
       }
+      counts[uuid] = (counts[uuid] || 0) + 1
     }
-    return Array.from(seen.values())
+    return { agentsPlayed: Array.from(seen.values()), agentCounts: counts }
   }, [stats])
 
   const handleConfirmBlacklist = async () => {
@@ -277,7 +283,7 @@ export function PlayerStatsDialog({ open, onOpenChange, player, viewerAccountId,
                   All ({stats.matches.length})
                 </button>
                 {agentsPlayed.map(ag => {
-                  const count = stats.matches.filter(m => m.agent?.uuid === ag.uuid).length
+                  const count = agentCounts[ag.uuid] || 0
                   const active = agentFilter === ag.uuid
                   return (
                     <button

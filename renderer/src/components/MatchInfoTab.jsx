@@ -83,7 +83,7 @@ function SelfBanner({ self, onClick }) {
         <div className="flex items-center gap-2 shrink-0">
           <div className="text-right">
             <p className="text-xs font-medium truncate">{self.rank.name}</p>
-            {self.rank.rr != null && <p className="text-[10px] text-muted-foreground">{self.rank.rr} RR</p>}
+            {self.rank.rr != null && <p className="text-[10px] font-semibold text-purple-400">{self.rank.rr} RR</p>}
           </div>
           <img src={self.rank.icon} alt={self.rank.name} className="h-10 w-10" />
         </div>

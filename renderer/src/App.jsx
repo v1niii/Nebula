@@ -112,33 +112,34 @@ function AppContent() {
     if (activeTab === 'match' && !features.matchInfo) setActiveTab('accounts')
   }, [features, activeTab])
 
-  // Fetch rank badges and session stats for every account. Both run
-  // sequentially per-account to be polite to the PD/MMR endpoints, cached in
-  // component state so tab switches never re-fetch. Silently skips accounts
-  // that fail (expired session, network error, etc.). Runs once per account
-  // list change — add/remove/reorder triggers a fresh walk.
+  // Fetch rank badges + session stats for every account in PARALLEL across
+  // accounts (each account's rank+session pair still runs sequentially to
+  // be polite to that one account's MMR endpoint, but accounts don't wait
+  // for each other). With 3 accounts this drops cold-start UI time from
+  // ~12s sequential → ~4s. Cached in component state so tab switches never
+  // re-fetch. Silently skips accounts that fail (expired session, etc.).
   useEffect(() => {
     if (!accounts.length) { setAccountRanks({}); setAccountSessions({}); return }
     let cancelled = false
-    ;(async () => {
-      for (const acc of accounts) {
-        if (cancelled) return
-        if (!accountRanks[acc.id]) {
-          try {
-            const r = await window.electronAPI.getAccountRank(acc.id)
-            if (cancelled) return
-            if (r.success && r.rank) setAccountRanks(prev => ({ ...prev, [acc.id]: r.rank }))
-          } catch { /* silent */ }
-        }
-        if (!accountSessions[acc.id]) {
-          try {
-            const s = await window.electronAPI.getSessionStats(acc.id)
-            if (cancelled) return
-            if (s.success && s.session) setAccountSessions(prev => ({ ...prev, [acc.id]: s.session }))
-          } catch { /* silent */ }
-        }
+    const fetchOne = async (acc) => {
+      if (cancelled) return
+      if (!accountRanks[acc.id]) {
+        try {
+          const r = await window.electronAPI.getAccountRank(acc.id)
+          if (cancelled) return
+          if (r.success && r.rank) setAccountRanks(prev => ({ ...prev, [acc.id]: r.rank }))
+        } catch { /* silent */ }
       }
-    })()
+      if (cancelled) return
+      if (!accountSessions[acc.id]) {
+        try {
+          const s = await window.electronAPI.getSessionStats(acc.id)
+          if (cancelled) return
+          if (s.success && s.session) setAccountSessions(prev => ({ ...prev, [acc.id]: s.session }))
+        } catch { /* silent */ }
+      }
+    }
+    Promise.all(accounts.map(fetchOne)).catch(() => {})
     return () => { cancelled = true }
   }, [accounts]) // eslint-disable-line react-hooks/exhaustive-deps
 

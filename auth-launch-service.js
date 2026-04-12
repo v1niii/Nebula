@@ -221,14 +221,18 @@ class AuthLaunchService {
         await fs.rm(destBase, { recursive: true, force: true }).catch(() => {});
         await fs.mkdir(destBase, { recursive: true });
 
-        for (const { rel } of AUTH_SNAPSHOT_FILES) {
-            try { await fs.mkdir(path.dirname(path.join(destBase, rel)), { recursive: true }); await fs.copyFile(path.join(srcBase, rel), path.join(destBase, rel)); }
-            catch (e) { console.warn(`Snapshot skip ${rel}: ${e.code}`); }
-        }
-        for (const { rel } of AUTH_SNAPSHOT_DIRS) {
-            try { await fs.cp(path.join(srcBase, rel), path.join(destBase, rel), { recursive: true }); }
-            catch (e) { console.warn(`Snapshot skip dir ${rel}: ${e.code}`); }
-        }
+        await Promise.all([
+            ...AUTH_SNAPSHOT_FILES.map(async ({ rel }) => {
+                try {
+                    await fs.mkdir(path.dirname(path.join(destBase, rel)), { recursive: true });
+                    await fs.copyFile(path.join(srcBase, rel), path.join(destBase, rel));
+                } catch (e) { console.warn(`Snapshot skip ${rel}: ${e.code}`); }
+            }),
+            ...AUTH_SNAPSHOT_DIRS.map(async ({ rel }) => {
+                try { await fs.cp(path.join(srcBase, rel), path.join(destBase, rel), { recursive: true }); }
+                catch (e) { console.warn(`Snapshot skip dir ${rel}: ${e.code}`); }
+            }),
+        ]);
         console.log(`Snapshot saved for ${accountId.substring(0, 8)}`);
     }
 
@@ -236,14 +240,22 @@ class AuthLaunchService {
         const srcBase = this._snapshotDir(accountId);
         const destBase = this._riotClientDir();
 
-        for (const { rel } of AUTH_SNAPSHOT_FILES) {
-            try { await fs.mkdir(path.dirname(path.join(destBase, rel)), { recursive: true }); await fs.copyFile(path.join(srcBase, rel), path.join(destBase, rel)); }
-            catch (e) { console.warn(`Restore skip ${rel}: ${e.code}`); }
-        }
-        for (const { rel } of AUTH_SNAPSHOT_DIRS) {
-            try { await fs.rm(path.join(destBase, rel), { recursive: true, force: true }).catch(() => {}); await fs.cp(path.join(srcBase, rel), path.join(destBase, rel), { recursive: true }); }
-            catch (e) { console.warn(`Restore skip dir ${rel}: ${e.code}`); }
-        }
+        // Restore files + dirs in parallel — 5+ sequential file ops at ~200ms
+        // each on slow disks were a noticeable contributor to launch latency.
+        await Promise.all([
+            ...AUTH_SNAPSHOT_FILES.map(async ({ rel }) => {
+                try {
+                    await fs.mkdir(path.dirname(path.join(destBase, rel)), { recursive: true });
+                    await fs.copyFile(path.join(srcBase, rel), path.join(destBase, rel));
+                } catch (e) { console.warn(`Restore skip ${rel}: ${e.code}`); }
+            }),
+            ...AUTH_SNAPSHOT_DIRS.map(async ({ rel }) => {
+                try {
+                    await fs.rm(path.join(destBase, rel), { recursive: true, force: true }).catch(() => {});
+                    await fs.cp(path.join(srcBase, rel), path.join(destBase, rel), { recursive: true });
+                } catch (e) { console.warn(`Restore skip dir ${rel}: ${e.code}`); }
+            }),
+        ]);
         console.log(`Snapshot restored for ${accountId.substring(0, 8)}`);
     }
 

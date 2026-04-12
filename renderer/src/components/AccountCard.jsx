@@ -74,14 +74,12 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, ra
     }
   }
 
-  // Session summary: "8W 2L · ↑24 RR" shown inline if we have session data.
-  // Uses directional arrows for the RR delta so positive/negative is legible
-  // without relying purely on color (accessibility).
+  // Session stats: today's W/L + RR delta. Wins are green, losses are red,
+  // RR delta uses a directional arrow plus the matching color so the sign
+  // is legible even for colorblind users.
+  const hasSession = session && session.games > 0
   const rrArrow = session && session.rrDelta
     ? (session.rrDelta > 0 ? `↑${session.rrDelta}` : `↓${Math.abs(session.rrDelta)}`)
-    : null
-  const sessionSummary = session && session.games > 0
-    ? `${session.wins}W ${session.losses}L${rrArrow ? ` · ${rrArrow} RR` : ''}`
     : null
 
   return (
@@ -114,7 +112,7 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, ra
               )}
             </span>
           )}
-          {sessionSummary && (
+          {hasSession && (
             <span className="text-xs truncate flex items-center gap-1">
               <span className="text-muted-foreground/60">·</span>
               <span className="text-green-500 font-semibold">{session.wins}W</span>

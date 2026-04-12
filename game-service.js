@@ -862,28 +862,46 @@ async function resolveNames({ accessToken, entitlementsToken, region, puuids }) 
 
 // Optional rank lookup — one call per player. Cached for 60s so rapid
 // manual refreshes of Match Info don't re-fetch MMR for every player.
+//
+// Cache key includes region because the same puuid queried against the
+// wrong shard returns placeholder data (Version=0 / null tier) and we don't
+// want to memoize that under a key that the right-shard call would also hit.
+//
+// In-flight dedup via `rankInFlight` map: if a second call comes in while
+// the first is still pending, both share the same Promise instead of firing
+// duplicate requests. Important for "user mashes refresh" scenarios.
+const rankInFlight = new Map();
 async function resolveRank({ accessToken, entitlementsToken, region, puuid }) {
-    const cached = rankCache.get(puuid);
+    const key = `${puuid}:${(region || 'NA').toUpperCase()}`;
+    const cached = rankCache.get(key);
     if (cached && Date.now() - cached.cachedAt < RANK_CACHE_TTL_MS) return cached.rank;
+    const inFlight = rankInFlight.get(key);
+    if (inFlight) return inFlight;
 
-    const url = `${pdUrl(region)}/mmr/v1/players/${puuid}`;
-    try {
-        const res = await fetchWithRetry(url, { headers: await authHeaders(accessToken, entitlementsToken) });
-        if (!res.ok) {
-            logCall('mmr', 'GET', url, res.status);
+    const promise = (async () => {
+        const url = `${pdUrl(region)}/mmr/v1/players/${puuid}`;
+        try {
+            const res = await fetchWithRetry(url, { headers: await authHeaders(accessToken, entitlementsToken) });
+            if (!res.ok) {
+                logCall('mmr', 'GET', url, res.status);
+                return null;
+            }
+            const data = await res.json();
+            const latestSeason = data?.LatestCompetitiveUpdate;
+            const tier = latestSeason?.TierAfterUpdate ?? latestSeason?.TierBeforeUpdate ?? 0;
+            const rr = latestSeason?.RankedRatingAfterUpdate ?? 0;
+            const rank = { tier, rr };
+            rankCache.set(key, { rank, cachedAt: Date.now() });
+            return rank;
+        } catch (e) {
+            console.warn(`[game] mmr error: ${e.message}`);
             return null;
+        } finally {
+            rankInFlight.delete(key);
         }
-        const data = await res.json();
-        const latestSeason = data?.LatestCompetitiveUpdate;
-        const tier = latestSeason?.TierAfterUpdate ?? latestSeason?.TierBeforeUpdate ?? 0;
-        const rr = latestSeason?.RankedRatingAfterUpdate ?? 0;
-        const rank = { tier, rr };
-        rankCache.set(puuid, { rank, cachedAt: Date.now() });
-        return rank;
-    } catch (e) {
-        console.warn(`[game] mmr error: ${e.message}`);
-        return null;
-    }
+    })();
+    rankInFlight.set(key, promise);
+    return promise;
 }
 
 // Normalize whichever match phase we're in into a single response shape.
