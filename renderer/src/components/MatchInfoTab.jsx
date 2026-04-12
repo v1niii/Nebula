@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Swords, RefreshCw, Shield, Crosshair, EyeOff, Circle, CircleCheck, Copy, AlertTriangle, Ban, Sparkles } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { Swords, RefreshCw, Shield, Crosshair, EyeOff, Circle, CircleCheck, Copy, AlertTriangle, Ban, Sparkles, Timer } from 'lucide-react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -205,23 +205,43 @@ export function MatchInfoTab({ accounts }) {
   }, [])
   useEffect(() => { reloadBlacklist() }, [reloadBlacklist])
 
-  const fetchMatch = useCallback(async () => {
+  // Auto-refresh state. 15s interval is the sweet spot: fast enough to catch
+  // agent locks and phase changes, slow enough to stay well under Riot's
+  // observed ~30 req/min soft rate limit (match-info uses ~3-4 calls per
+  // refresh → ~16 req/min at 15s). The fetchInProgress ref prevents
+  // overlapping fetches when a refresh takes longer than the interval.
+  const AUTO_REFRESH_MS = 15_000
+  const [autoRefresh, setAutoRefresh] = useState(false)
+  const fetchInProgress = useRef(false)
+
+  const fetchMatch = useCallback(async (silent = false) => {
     if (!selectedId) return
-    setLoading(true)
+    if (fetchInProgress.current) return // prevent overlapping fetches
+    fetchInProgress.current = true
+    if (!silent) setLoading(true)
     try {
       const result = await window.electronAPI.getMatchInfo(selectedId)
       if (result.success) setMatch(result.match)
-      else { toast.error(result.error || 'Failed to load match info.'); setMatch(null) }
+      else if (!silent) { toast.error(result.error || 'Failed to load match info.'); setMatch(null) }
     } catch (e) {
-      toast.error(e.message)
+      if (!silent) toast.error(e.message)
     } finally {
-      setLoading(false)
+      fetchInProgress.current = false
+      if (!silent) setLoading(false)
     }
   }, [selectedId, toast])
 
   useEffect(() => {
     if (selectedId) fetchMatch()
   }, [selectedId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-refresh interval — runs silently (no loading spinner, no error
+  // toasts) so the UI stays calm during background refreshes.
+  useEffect(() => {
+    if (!autoRefresh || !selectedId) return
+    const id = setInterval(() => fetchMatch(true), AUTO_REFRESH_MS)
+    return () => clearInterval(id)
+  }, [autoRefresh, selectedId, fetchMatch])
 
   // Pre-compute the blacklist-hit set for the current match — used by the
   // warning banner, the row highlighter, and the toast below. Includes the
@@ -266,7 +286,17 @@ export function MatchInfoTab({ accounts }) {
         <Button variant="outline" size="icon" onClick={() => setBlacklistOpen(true)} title="Manage blacklist">
           <Ban className="h-4 w-4" />
         </Button>
-        <Button variant="outline" size="icon" onClick={fetchMatch} disabled={loading || !selectedId} title="Refresh">
+        <Button
+          variant="outline"
+          size="icon"
+          onClick={() => setAutoRefresh(v => !v)}
+          disabled={!selectedId}
+          title={autoRefresh ? 'Auto-refresh ON (15s) — click to stop' : 'Auto-refresh OFF — click to start'}
+          className={autoRefresh ? 'border-purple-500/50 bg-purple-500/10 text-purple-400' : ''}
+        >
+          <Timer className="h-4 w-4" />
+        </Button>
+        <Button variant="outline" size="icon" onClick={() => fetchMatch(false)} disabled={loading || !selectedId} title="Refresh">
           <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
         </Button>
       </div>
