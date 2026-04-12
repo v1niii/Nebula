@@ -318,18 +318,17 @@ async function ensureSkinCatalog() {
             // store via "Borealis" / re-release bundles, but the vast
             // majority don't, so excluding by default is the right call.
             if (battlepassIds.has(levelOne.uuid)) { bpFiltered++; continue; }
-            // Image fallback chain: skin.displayIcon → every level's
-            // displayIcon → every chroma's fullRender → every chroma's
-            // displayIcon → null. Walks ALL levels and chromas (not just
-            // the first) because some skins have a missing icon on the
-            // first variant but a working one on a later chroma.
-            let icon = skin.displayIcon || null;
+            // Image priority chain. Prefer chroma fullRender (the actual
+            // in-game weapon art) over skin.displayIcon because
+            // valorant-api.com serves a gray X placeholder as the
+            // "official" displayIcon for some skins (e.g. Sovereign
+            // Guardian) — the chromas and levels have the real renders.
+            let icon = null;
+            for (const ch of skin.chromas || []) { if (ch.fullRender) { icon = ch.fullRender; break; } }
             if (!icon) {
                 for (const lvl of skin.levels || []) { if (lvl.displayIcon) { icon = lvl.displayIcon; break; } }
             }
-            if (!icon) {
-                for (const ch of skin.chromas || []) { if (ch.fullRender) { icon = ch.fullRender; break; } }
-            }
+            if (!icon) icon = skin.displayIcon || null;
             if (!icon) {
                 for (const ch of skin.chromas || []) { if (ch.displayIcon) { icon = ch.displayIcon; break; } }
             }
