@@ -573,7 +573,7 @@ const RANK_CACHE_TTL_MS = 60 * 1000;
 // calls per refresh once the user has been playing for a while.
 const processedMatches = new Set();
 let nameCacheLastPopulatedAt = 0;
-const NAME_CACHE_TTL_MS = 5 * 60 * 1000; // re-populate at most every 5 minutes
+const NAME_CACHE_TTL_MS = 30 * 60 * 1000; // re-populate at most every 30 minutes
 let nameCacheFilePath = null;
 let nameCacheDirty = false;
 let nameCacheSaveTimer = null;
@@ -676,7 +676,7 @@ async function populateNameCacheFromHistory(ctx) {
     if (Date.now() - nameCacheLastPopulatedAt < NAME_CACHE_TTL_MS) return;
     nameCacheLastPopulatedAt = Date.now();
 
-    const matchIds = await fetchMatchHistory(ctx, 20);
+    const matchIds = await fetchMatchHistory(ctx, 10);
     if (!matchIds.length) return;
     const newMatchIds = matchIds.filter(id => !processedMatches.has(id));
     if (!newMatchIds.length) {
@@ -896,16 +896,21 @@ async function getMatchInfo({ accessToken, entitlementsToken, region, puuid }, o
     if (!current) return { inMatch: false };
 
     const { matchId, phase } = current;
-    // Populate the post-game name cache in parallel with content metadata.
-    // Fire-and-forget when it's already fresh; the promise is still awaited so
-    // buildPlayer sees a consistent cache state, but the 5-minute TTL keeps
-    // this cheap on rapid refreshes.
+    // Fire the post-game name cache populate in the BACKGROUND. It walks
+    // up to 20 match-detail fetches which used to dominate the critical
+    // path on the first match-info call after launch (sometimes 10+
+    // seconds). The cache it builds is only a fallback for incognito-name
+    // resolution on FUTURE calls — buildPlayer reads from `nameCache.get()`
+    // which has whatever's already in memory + any persisted entries from
+    // disk on app startup. First call may miss a freshly-changed name; the
+    // second call always has it.
+    populateNameCacheFromHistory(ctx).catch(() => {});
+
     const [agents, maps, ranks, playerCards] = await Promise.all([
         ensureAgents(),
         ensureMaps(),
         ensureRanks(),
         ensurePlayerCards(),
-        populateNameCacheFromHistory(ctx),
     ]);
 
     let raw, mapId, yourTeam, rawAllyPlayers, rawEnemyPlayers;
@@ -1090,10 +1095,18 @@ async function getMatchInfo({ accessToken, entitlementsToken, region, puuid }, o
 }
 
 // Build the player's last-N act history from MMR seasonal data. Each entry
-// is the rank the player ENDED that act in (Rank / CompetitiveTier fields).
-// Uses the startTime from the seasons metadata to sort acts chronologically.
-// Skips acts where the player never played a competitive game (no WinsByTier
-// entries and NumberOfGames == 0). Returns newest-first.
+// is the rank the player ENDED that act in.
+//
+// Field semantics in QueueSkills.competitive.SeasonalInfoBySeasonID:
+//   Rank            = HIGHEST tier ever achieved that season (peak)
+//   CompetitiveTier = ending/current tier for that season
+//   RankedRating    = ending RR (0-100 below Immortal, accumulating ladder
+//                     points at Immortal+)
+//   WinsByTier      = win count distribution across every tier touched
+//
+// Earlier code used `Rank || CompetitiveTier` which surfaced the peak —
+// wrong for "ended in" semantics. Flipped to prefer CompetitiveTier so the
+// badge matches what the player actually finished the act at.
 function buildActHistory(mmrData, seasons, ranks, limit = 3) {
     const seasonal = mmrData?.QueueSkills?.competitive?.SeasonalInfoBySeasonID || {};
     const entries = [];
@@ -1104,18 +1117,20 @@ function buildActHistory(mmrData, seasons, ranks, limit = 3) {
         const winsByTier = season?.WinsByTier || {};
         const hadActivity = games > 0 || Object.keys(winsByTier).length > 0;
         if (!hadActivity) continue;
-        // Rank = ending rank for past seasons, CompetitiveTier = current tier
-        // for the active season. Prefer Rank, fall back to CompetitiveTier.
-        const tier = season.Rank || season.CompetitiveTier || 0;
+        const endTier = season.CompetitiveTier || season.Rank || 0;
+        const peakTier = season.Rank || season.CompetitiveTier || 0;
         const rr = season.RankedRating || 0;
-        const rankMeta = ranks[tier];
+        const rankMeta = ranks[endTier];
+        const peakMeta = ranks[peakTier];
         entries.push({
             seasonId,
             act: meta.full || meta.name,
             startTime: meta.startTime,
-            tier,
+            tier: endTier,
             name: rankMeta?.name || 'Unranked',
             icon: rankMeta?.icon || null,
+            peakTier,
+            peakName: peakMeta?.name || null,
             rr,
             games,
         });

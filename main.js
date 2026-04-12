@@ -232,6 +232,9 @@ ipcMain.handle('remove-account', async (event, accountId) => {
     try {
         await authService.removeAccount(accountId);
         await authLaunchService.deleteSnapshot(accountId);
+        // Clear the in-memory region-verified flag so a re-import of the same
+        // puuid runs the probe fresh instead of trusting a stale verdict.
+        regionVerifiedThisSession.delete(accountId);
         rebuildTrayMenu();
         return { success: true };
     } catch (error) { return { success: false, error: error.message }; }

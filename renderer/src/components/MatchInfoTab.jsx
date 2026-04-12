@@ -141,7 +141,12 @@ function PlayerRow({ p, blacklisted, onClick, onCopy }) {
         <Copy className="h-3.5 w-3.5" />
       </button>
       {p.rank?.icon && (
-        <img src={p.rank.icon} alt={p.rank.name} className="h-7 w-7 shrink-0" title={`${p.rank.name} · ${p.rank.rr} RR`} />
+        <div className="flex flex-col items-center shrink-0 gap-0.5">
+          <img src={p.rank.icon} alt={p.rank.name} className="h-7 w-7" />
+          {p.rank.rr != null && (
+            <span className="text-[9px] font-semibold text-purple-400 leading-none">{p.rank.rr} RR</span>
+          )}
+        </div>
       )}
       </div>
     </button>

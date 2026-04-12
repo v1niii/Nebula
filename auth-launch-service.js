@@ -301,8 +301,10 @@ class AuthLaunchService {
 
         // SSID definitively expired → safe to clear and prompt re-login.
         // PRESERVE tdid (Trusted Device ID) so MFA isn't re-prompted on every
-        // session refresh. Only the ssid/clid/csid/sub session cookies need
-        // to go — tdid is the "this machine is trusted" token.
+        // session refresh. Drops only the account-specific cookies
+        // (ssid/csid/sub/asid) and keeps generic infrastructure (ccid, clid,
+        // __cf_bm) plus tdid, which we inject from rso-authenticator.tdid if
+        // it isn't already in the cookies array.
         console.log('Session truly expired. Reopening login page...');
         await this.closeRiotProcesses();
         await new Promise(r => setTimeout(r, 2000));
@@ -311,21 +313,7 @@ class AuthLaunchService {
         try {
             const content = await fs.readFile(authYamlPath, 'utf-8');
             const parsed = yaml.parse(content);
-            const existingCookies = parsed?.['riot-login']?.persist?.session?.cookies || [];
-            const tdidCookie = existingCookies.find(c => c?.name === 'tdid');
-            if (parsed?.['riot-login']) {
-                if (tdidCookie) {
-                    parsed['riot-login'].persist = {
-                        ...(parsed['riot-login'].persist || {}),
-                        session: {
-                            ...(parsed['riot-login'].persist?.session || {}),
-                            cookies: [tdidCookie],
-                        },
-                    };
-                } else {
-                    parsed['riot-login'].persist = null;
-                }
-            }
+            this._stripAccountSessionCookies(parsed);
             await fs.writeFile(authYamlPath, yaml.stringify(parsed), 'utf-8');
         } catch {}
         for (const f of ['Config/lockfile', 'Config/lockfile_']) await fs.unlink(path.join(riotDir, f)).catch(() => {});
@@ -356,6 +344,53 @@ class AuthLaunchService {
     }
 
     // --- Add / Import accounts ---
+
+    // Mutates `parsed` (a parsed RiotGamesPrivateSettings.yaml object) in
+    // place to clear the account session while preserving the trust-device
+    // state needed to skip MFA on the next login.
+    //
+    // Critical detail: tdid is stored in TWO places by the Riot Client —
+    //   1. The top-level `rso-authenticator.tdid` block (always present)
+    //   2. As a regular cookie inside `riot-login.persist.session.cookies`
+    //      (sometimes present, sometimes not)
+    // The auth server checks #2 during login. If we wipe persist entirely
+    // OR drop the tdid cookie, the trust-device path fails and Riot prompts
+    // MFA, even though `rso-authenticator.tdid` still exists on disk.
+    //
+    // Earlier code wiped `riot-login.persist = null` which destroyed the
+    // tdid cookie. The v3.1.5 fix tried to preserve it but looked in the
+    // wrong field (cookies array) so the find always returned undefined
+    // and we still ended up nulling persist. This version sources tdid
+    // from `rso-authenticator.tdid` (the authoritative location) and
+    // injects it into the cookies array, AND keeps the generic
+    // infrastructure cookies (ccid, clid, __cf_bm) that don't identify
+    // the account but help Riot recognize the device.
+    _stripAccountSessionCookies(parsed) {
+        if (!parsed) return;
+        const ACCOUNT_COOKIE_NAMES = new Set(['ssid', 'csid', 'sub', 'asid']);
+        const existingCookies = parsed?.['riot-login']?.persist?.session?.cookies || [];
+        const keptCookies = existingCookies.filter(
+            c => c && c.name && !ACCOUNT_COOKIE_NAMES.has(c.name)
+        );
+        // Find tdid wherever it lives. Prefer the cookies array (what the
+        // auth server actually sends), fall back to rso-authenticator.tdid.
+        const tdidFromCookies = existingCookies.find(c => c?.name === 'tdid');
+        const tdidFromAuthBlock = parsed?.['rso-authenticator']?.tdid;
+        const tdidEntry = tdidFromCookies || tdidFromAuthBlock || null;
+        if (tdidEntry && !keptCookies.find(c => c?.name === 'tdid')) {
+            keptCookies.push(tdidEntry);
+        }
+        if (parsed['riot-login']) {
+            parsed['riot-login'].persist = {
+                ...(parsed['riot-login'].persist || {}),
+                session: {
+                    ...(parsed['riot-login'].persist?.session || {}),
+                    cookies: keptCookies,
+                },
+            };
+        }
+        // rso-authenticator.tdid is preserved (we never reassign that key).
+    }
 
     // Read the live RiotGamesPrivateSettings.yaml directly. Works regardless of UI state (tray, hidden, etc).
     async _readLiveRiotCookies() {
@@ -405,36 +440,15 @@ class AuthLaunchService {
         await this.closeRiotProcesses();
         await new Promise(r => setTimeout(r, 2000));
 
-        // Clear the SESSION cookies (ssid/clid/csid/sub) so the login page shows,
-        // but PRESERVE tdid (Trusted Device ID). tdid is the cookie Riot uses to
-        // remember "this machine was already verified via MFA" — wiping it
-        // forces MFA on every single login, which is exactly what was happening
-        // before this fix. Also preserves rso-authenticator.tdid.value if that
-        // alt location exists.
+        // Strip the account-specific session cookies but PRESERVE tdid (Trusted
+        // Device ID) so the next login skips MFA. See _stripAccountSessionCookies
+        // for the full rationale.
         const riotDir = this._riotClientDir();
         const authYamlPath = path.join(riotDir, 'Data', 'RiotGamesPrivateSettings.yaml');
         try {
             const content = await fs.readFile(authYamlPath, 'utf-8');
             const parsed = yaml.parse(content);
-
-            const existingCookies = parsed?.['riot-login']?.persist?.session?.cookies || [];
-            const tdidCookie = existingCookies.find(c => c?.name === 'tdid');
-
-            if (parsed?.['riot-login']) {
-                if (tdidCookie) {
-                    // Keep the structure, but leave only the tdid cookie so the
-                    // next login's MFA check finds it and skips the prompt.
-                    parsed['riot-login'].persist = {
-                        ...(parsed['riot-login'].persist || {}),
-                        session: {
-                            ...(parsed['riot-login'].persist?.session || {}),
-                            cookies: [tdidCookie],
-                        },
-                    };
-                } else {
-                    parsed['riot-login'].persist = null;
-                }
-            }
+            this._stripAccountSessionCookies(parsed);
             await fs.writeFile(authYamlPath, yaml.stringify(parsed), 'utf-8');
         } catch {
             // If file doesn't exist, that's fine - login page will show

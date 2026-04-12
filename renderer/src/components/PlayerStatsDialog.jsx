@@ -165,8 +165,8 @@ export function PlayerStatsDialog({ open, onOpenChange, player, viewerAccountId,
             {stats.actHistory?.length > 0 && (
               <div className="rounded-md border bg-card p-3 space-y-2">
                 <div className="flex items-center gap-1.5">
-                  <History className="h-3 w-3 text-muted-foreground shrink-0" />
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">Last {stats.actHistory.length} Acts</p>
+                  <History className="h-3 w-3 text-purple-400 shrink-0" />
+                  <p className="text-[10px] text-purple-400 uppercase tracking-wider font-semibold">Last {stats.actHistory.length} Acts</p>
                 </div>
                 <div className="grid grid-cols-3 gap-2">
                   {stats.actHistory.map((act) => (
@@ -228,24 +228,36 @@ export function PlayerStatsDialog({ open, onOpenChange, player, viewerAccountId,
 
             {/* Match history header */}
             <div className="flex items-center gap-1.5">
-              <Swords className="h-3.5 w-3.5 text-muted-foreground" />
-              <h3 className="text-sm font-semibold">Recent Competitive</h3>
+              <Swords className="h-3.5 w-3.5 text-purple-400" />
+              <h3 className="text-sm font-semibold text-foreground">Recent Competitive</h3>
               <span className="text-xs text-muted-foreground">({stats.matches.length})</span>
             </div>
 
             {/* Aggregate stats over the filtered competitive matches */}
             <div className="rounded-md border bg-card p-3 space-y-3">
               <div className="grid grid-cols-4 gap-3 text-center">
-                <StatCell top={<span className="text-green-500">{aggregate.wins}W</span>} bot={`${aggregate.losses}L`} />
-                <StatCell top={`${aggregate.winRate}%`} bot="win rate" />
-                <StatCell top={aggregate.kd} bot="K/D" />
+                <StatCell
+                  top={<><span className="text-green-500">{aggregate.wins}W</span> <span className="text-red-500">{aggregate.losses}L</span></>}
+                  bot="record"
+                />
+                <StatCell
+                  top={<span className={aggregate.winRate >= 50 ? 'text-green-500' : 'text-red-500'}>{aggregate.winRate}%</span>}
+                  bot="win rate"
+                />
+                <StatCell
+                  top={<span className={aggregate.kd >= 1 ? 'text-green-500' : 'text-red-500'}>{aggregate.kd}</span>}
+                  bot="K/D"
+                />
                 <StatCell top={`${aggregate.kills}/${aggregate.deaths}/${aggregate.assists}`} bot="KDA" />
               </div>
               <div className="border-t pt-2 grid grid-cols-4 gap-3 text-center">
-                <StatCell top={aggregate.acs || 0} bot="ACS" />
-                <StatCell top={aggregate.adr || 0} bot="ADR" />
-                <StatCell top={`${aggregate.hsPercent || 0}%`} bot="HS%" />
-                <StatCell top={aggregate.ddDelta > 0 ? `+${aggregate.ddDelta}` : (aggregate.ddDelta || 0)} bot="DDΔ" />
+                <StatCell top={<span className="text-cyan-400">{aggregate.acs || 0}</span>} bot="ACS" />
+                <StatCell top={<span className="text-cyan-400">{aggregate.adr || 0}</span>} bot="ADR" />
+                <StatCell top={<span className="text-amber-400">{aggregate.hsPercent || 0}%</span>} bot="HS%" />
+                <StatCell
+                  top={<span className={aggregate.ddDelta > 0 ? 'text-green-500' : aggregate.ddDelta < 0 ? 'text-red-500' : ''}>{aggregate.ddDelta > 0 ? `+${aggregate.ddDelta}` : (aggregate.ddDelta || 0)}</span>}
+                  bot="DDΔ"
+                />
               </div>
             </div>
 
@@ -309,17 +321,21 @@ function RankCard({ label, icon: Icon, rank, showAct = false }) {
   return (
     <div className="rounded-md border bg-card p-3">
       <div className="flex items-center gap-1.5 mb-1.5">
-        <Icon className="h-3 w-3 text-muted-foreground shrink-0" />
-        <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">{label}</p>
+        <Icon className="h-3 w-3 text-purple-400 shrink-0" />
+        <p className="text-[10px] text-purple-400 uppercase tracking-wider font-semibold">{label}</p>
       </div>
       {rank ? (
         <div className="flex items-center gap-2">
           {rank.icon && <img src={rank.icon} alt={rank.name} className="h-10 w-10 shrink-0" />}
-          <div className="min-w-0">
-            <p className="text-sm font-semibold truncate leading-tight">{rank.name}</p>
-            {rank.rr > 0 && <p className="text-xs text-muted-foreground mt-0.5">{rank.rr} RR</p>}
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-bold truncate leading-tight text-foreground">{rank.name}</p>
+            {rank.rr > 0 && (
+              <span className="inline-block text-[10px] font-semibold text-purple-400 bg-purple-500/10 border border-purple-500/30 rounded px-1.5 py-0.5 leading-none mt-1">
+                {rank.rr} RR
+              </span>
+            )}
             {showAct && rank.act && (
-              <p className="text-[10px] text-muted-foreground truncate mt-0.5" title={rank.act}>{rank.act}</p>
+              <p className="text-[10px] text-muted-foreground/80 truncate mt-1">{rank.act}</p>
             )}
           </div>
         </div>
@@ -331,22 +347,34 @@ function RankCard({ label, icon: Icon, rank, showAct = false }) {
 }
 
 function ActHistoryCell({ act }) {
-  // Show the rank icon + name + act label stacked. Compact so three fit in a
-  // single row. Falls back to Unranked text when the tier has no icon.
+  // Show the rank icon + ending rank name + RR + act label + games. Stacked
+  // compact so three fit per row. Color hierarchy:
+  //   - rank name: foreground, bold
+  //   - RR pill:   purple accent for emphasis
+  //   - act label: muted
+  //   - games:     muted, smaller
   return (
-    <div className="rounded-md border bg-card/60 p-2 flex flex-col items-center text-center">
+    <div className="rounded-md border bg-card/60 p-2 flex flex-col items-center text-center gap-1">
       {act.icon ? (
-        <img src={act.icon} alt={act.name} className="h-10 w-10" title={`${act.name}${act.rr ? ` · ${act.rr} RR` : ''} · ${act.games} games`} />
+        <img src={act.icon} alt={act.name} className="h-10 w-10" />
       ) : (
         <div className="h-10 w-10 flex items-center justify-center">
           <span className="text-[10px] text-muted-foreground">—</span>
         </div>
       )}
-      <p className="text-[10px] font-semibold leading-tight mt-0.5 truncate max-w-full" title={act.name}>
+      <p className="text-[11px] font-semibold leading-tight truncate max-w-full text-foreground">
         {act.name}
       </p>
-      <p className="text-[9px] text-muted-foreground leading-tight mt-0.5 truncate max-w-full" title={act.act}>
+      {act.rr > 0 && (
+        <span className="text-[10px] font-semibold text-purple-400 bg-purple-500/10 border border-purple-500/30 rounded px-1.5 py-0.5 leading-none">
+          {act.rr} RR
+        </span>
+      )}
+      <p className="text-[10px] text-muted-foreground leading-tight truncate max-w-full">
         {act.act}
+      </p>
+      <p className="text-[9px] text-muted-foreground/70 leading-tight">
+        {act.games} games
       </p>
     </div>
   )
@@ -362,6 +390,14 @@ function StatCell({ top, bot }) {
 }
 
 function MatchRow({ m }) {
+  // Color hierarchy:
+  //   - map name:    foreground (white)
+  //   - agent name:  muted
+  //   - score:       foreground (the round count is the headline secondary stat)
+  //   - K/D/A:       kills green, deaths red, assists muted
+  //   - ACS/ADR:     cyan (offensive metrics)
+  //   - HS%:         amber (precision metric)
+  //   - W/L badge:   large colored letter
   return (
     <div
       className={`flex items-center gap-2.5 rounded-md border px-2.5 py-2 ${
@@ -371,29 +407,35 @@ function MatchRow({ m }) {
       {m.agent?.icon && <img src={m.agent.icon} alt={m.agent.name} className="h-8 w-8 rounded shrink-0" />}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
-          <p className="text-xs font-semibold truncate">{m.map}</p>
-          <span className="text-[10px] text-muted-foreground">·</span>
+          <p className="text-xs font-semibold truncate text-foreground">{m.map}</p>
+          <span className="text-[10px] text-muted-foreground/60">·</span>
           <p className="text-[11px] text-muted-foreground truncate">{m.agent?.name || 'Unknown'}</p>
         </div>
         <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-          <span className="text-[11px] text-muted-foreground">{m.score}</span>
-          <span className="text-[10px] text-muted-foreground">·</span>
-          <span className="text-[11px] text-muted-foreground">{m.kills}/{m.deaths}/{m.assists}</span>
+          <span className="text-[11px] font-semibold text-foreground">{m.score}</span>
+          <span className="text-[10px] text-muted-foreground/60">·</span>
+          <span className="text-[11px] font-medium">
+            <span className="text-green-500">{m.kills}</span>
+            <span className="text-muted-foreground/60">/</span>
+            <span className="text-red-500">{m.deaths}</span>
+            <span className="text-muted-foreground/60">/</span>
+            <span className="text-muted-foreground">{m.assists}</span>
+          </span>
           {m.acs > 0 && <>
-            <span className="text-[10px] text-muted-foreground">·</span>
-            <span className="text-[11px] text-muted-foreground">{m.acs} ACS</span>
+            <span className="text-[10px] text-muted-foreground/60">·</span>
+            <span className="text-[11px] text-cyan-400">{m.acs} ACS</span>
           </>}
           {m.adr > 0 && <>
-            <span className="text-[10px] text-muted-foreground">·</span>
-            <span className="text-[11px] text-muted-foreground">{m.adr} ADR</span>
+            <span className="text-[10px] text-muted-foreground/60">·</span>
+            <span className="text-[11px] text-cyan-400">{m.adr} ADR</span>
           </>}
           {m.hsPercent > 0 && <>
-            <span className="text-[10px] text-muted-foreground">·</span>
-            <span className="text-[11px] text-muted-foreground">{m.hsPercent}% HS</span>
+            <span className="text-[10px] text-muted-foreground/60">·</span>
+            <span className="text-[11px] text-amber-400">{m.hsPercent}% HS</span>
           </>}
         </div>
       </div>
-      <div className={`text-sm font-bold ${m.won ? 'text-green-500' : 'text-red-500'}`}>
+      <div className={`text-base font-bold ${m.won ? 'text-green-500' : 'text-red-500'}`}>
         {m.won ? 'W' : 'L'}
       </div>
     </div>

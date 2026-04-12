@@ -95,7 +95,6 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, ra
           src={rank.current.icon}
           alt={rank.current.name}
           className="h-7 w-7 shrink-0 mr-2"
-          title={`${rank.current.name}${rank.current.rr ? ` · ${rank.current.rr} RR` : ''}${rank.peak?.name ? ` · Peak: ${rank.peak.name}${rank.peak.rr ? ` (${rank.peak.rr} RR)` : ''}` : ''}`}
         />
       )}
 
@@ -108,16 +107,23 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, ra
           <span className="text-xs text-muted-foreground">{account.region || 'N/A'}</span>
           <span className="text-xs text-muted-foreground">{formatTime(account.lastUsed)}</span>
           {rank?.current?.name && (
-            <span className="text-xs text-muted-foreground truncate" title={rank.current.name}>
+            <span className="text-xs text-foreground truncate font-medium">
               {rank.current.name}
+              {rank.current.rr > 0 && (
+                <span className="text-purple-400 font-semibold ml-1">{rank.current.rr} RR</span>
+              )}
             </span>
           )}
           {sessionSummary && (
-            <span
-              className={`text-xs truncate ${session.rrDelta > 0 ? 'text-green-500' : session.rrDelta < 0 ? 'text-red-500' : 'text-muted-foreground'}`}
-              title={`Today: ${session.games} games · ${session.wins}W ${session.losses}L · K/D ${session.kd}${session.rrDelta ? ` · ${session.rrDelta > 0 ? '+' : ''}${session.rrDelta} RR` : ''}`}
-            >
-              · {sessionSummary}
+            <span className="text-xs truncate flex items-center gap-1">
+              <span className="text-muted-foreground/60">·</span>
+              <span className="text-green-500 font-semibold">{session.wins}W</span>
+              <span className="text-red-500 font-semibold">{session.losses}L</span>
+              {rrArrow && (
+                <span className={session.rrDelta > 0 ? 'text-green-500 font-semibold' : 'text-red-500 font-semibold'}>
+                  {rrArrow} RR
+                </span>
+              )}
             </span>
           )}
           <StatusIndicator status={launchStatus} />
