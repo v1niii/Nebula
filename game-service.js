@@ -1163,19 +1163,45 @@ function buildActHistory(mmrData, seasons, ranks, limit = 3) {
 // every tier the player has ever won at, across every act ever — this is the
 // only reliable source for historical peak tier that goes beyond the
 // 100-game window of the competitiveupdates endpoint.
-function findAllTimePeak(mmrData) {
+//
+// Tie-breaker: when multiple seasons share the same peak tier (e.g. you hit
+// Immortal 3 in three different acts), prefer the MOST RECENT season — that's
+// the more relevant data point for "your peak rank". Old code used object key
+// iteration order which is undefined and could surface a years-old episode
+// instead of the act you actually played most recently.
+function findAllTimePeak(mmrData, seasonsMeta = {}) {
+    const seasonal = mmrData?.QueueSkills?.competitive?.SeasonalInfoBySeasonID || {};
+
+    // First pass: find the maximum peak tier across all seasons.
     let peakTier = 0;
-    let peakSeasonId = null;
-    const seasons = mmrData?.QueueSkills?.competitive?.SeasonalInfoBySeasonID || {};
-    for (const [seasonId, season] of Object.entries(seasons)) {
-        // WinsByTier keys are tier numbers as strings
+    for (const season of Object.values(seasonal)) {
         for (const tierStr of Object.keys(season?.WinsByTier || {})) {
             const t = parseInt(tierStr, 10);
-            if (t > peakTier) { peakTier = t; peakSeasonId = seasonId; }
+            if (t > peakTier) peakTier = t;
         }
-        // Defense in depth: also consider Rank and CompetitiveTier fields
-        if ((season?.Rank ?? 0) > peakTier) { peakTier = season.Rank; peakSeasonId = seasonId; }
-        if ((season?.CompetitiveTier ?? 0) > peakTier) { peakTier = season.CompetitiveTier; peakSeasonId = seasonId; }
+        if ((season?.Rank ?? 0) > peakTier) peakTier = season.Rank;
+        if ((season?.CompetitiveTier ?? 0) > peakTier) peakTier = season.CompetitiveTier;
+    }
+    if (peakTier === 0) return { tier: 0, seasonId: null };
+
+    // Second pass: of all seasons that hit the peak tier, pick the MOST
+    // RECENT by startTime. Falls back to the first match found if metadata
+    // is missing.
+    let peakSeasonId = null;
+    let peakStart = -Infinity;
+    for (const [seasonId, season] of Object.entries(seasonal)) {
+        const seasonHitPeak =
+            !!(season?.WinsByTier?.[String(peakTier)]) ||
+            (season?.Rank ?? 0) === peakTier ||
+            (season?.CompetitiveTier ?? 0) === peakTier;
+        if (!seasonHitPeak) continue;
+        const startTime = seasonsMeta[seasonId]?.startTime
+            ? new Date(seasonsMeta[seasonId].startTime).getTime()
+            : 0;
+        if (startTime > peakStart) {
+            peakStart = startTime;
+            peakSeasonId = seasonId;
+        }
     }
     return { tier: peakTier, seasonId: peakSeasonId };
 }
@@ -1245,12 +1271,29 @@ async function getAccountRank(ctx) {
         const currentSeasonId = latest?.SeasonID;
         const currentAct = currentSeasonId ? seasons[currentSeasonId]?.full : null;
 
-        const allTimePeak = findAllTimePeak(data);
+        const allTimePeak = findAllTimePeak(data, seasons);
         let peakTier = allTimePeak.tier;
         let peakSeasonId = allTimePeak.seasonId;
         if (currentTier > peakTier) { peakTier = currentTier; peakSeasonId = currentSeasonId; }
+        // Peak RR resolution chain (best → worst):
+        //   1. recent competitiveupdates window (<= ~100 games) IF the peak
+        //      tier is in that window
+        //   2. SeasonalInfoBySeasonID[peakSeasonId].RankedRating — ENDING
+        //      RR for the peak season, only valid if the player ended that
+        //      season at the peak tier (otherwise it's a lower-tier value)
+        //   3. current RR if current tier == peak tier
+        //   4. 0 (no signal)
         let peakRR = 0;
         if (recentPeak.tier === peakTier) peakRR = recentPeak.rr;
+        const peakSeasonalInfo = peakSeasonId
+            ? data?.QueueSkills?.competitive?.SeasonalInfoBySeasonID?.[peakSeasonId]
+            : null;
+        if (peakRR === 0 && peakSeasonalInfo) {
+            const seasonEndTier = peakSeasonalInfo.CompetitiveTier || peakSeasonalInfo.Rank || 0;
+            if (seasonEndTier === peakTier && peakSeasonalInfo.RankedRating > 0) {
+                peakRR = peakSeasonalInfo.RankedRating;
+            }
+        }
         if (currentTier === peakTier && currentRR > peakRR) peakRR = currentRR;
 
         const currentMeta = ranks[currentTier];
@@ -1339,12 +1382,21 @@ async function getPlayerStats(ctx, targetPuuid) {
             const curSeasonId = latest?.SeasonID;
             const curAct = curSeasonId ? seasons[curSeasonId]?.full : null;
 
-            const allTime = findAllTimePeak(data);
+            const allTime = findAllTimePeak(data, seasons);
             let peakTier = allTime.tier;
             let peakSeasonId = allTime.seasonId;
             if (curTier > peakTier) { peakTier = curTier; peakSeasonId = curSeasonId; }
             let peakRR = 0;
             if (recentPeak.tier === peakTier) peakRR = recentPeak.rr;
+            const peakSeasonal = peakSeasonId
+                ? data?.QueueSkills?.competitive?.SeasonalInfoBySeasonID?.[peakSeasonId]
+                : null;
+            if (peakRR === 0 && peakSeasonal) {
+                const seasonEndTier = peakSeasonal.CompetitiveTier || peakSeasonal.Rank || 0;
+                if (seasonEndTier === peakTier && peakSeasonal.RankedRating > 0) {
+                    peakRR = peakSeasonal.RankedRating;
+                }
+            }
             if (curTier === peakTier && curRR > peakRR) peakRR = curRR;
 
             const peakAct = peakSeasonId ? seasons[peakSeasonId]?.full : null;

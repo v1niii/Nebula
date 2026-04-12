@@ -335,7 +335,7 @@ function RankCard({ label, icon: Icon, rank, showAct = false }) {
           {rank.icon && <img src={rank.icon} alt={rank.name} className="h-10 w-10 shrink-0" />}
           <div className="min-w-0 flex-1">
             <p className="text-sm font-bold truncate leading-tight text-foreground">{rank.name}</p>
-            {rank.rr > 0 && (
+            {rank.rr != null && (
               <span className="inline-block text-[10px] font-semibold text-purple-400 bg-purple-500/10 border border-purple-500/30 rounded px-1.5 py-0.5 leading-none mt-1">
                 {rank.rr} RR
               </span>
@@ -371,7 +371,7 @@ function ActHistoryCell({ act }) {
       <p className="text-[11px] font-semibold leading-tight truncate max-w-full text-foreground">
         {act.name}
       </p>
-      {act.rr > 0 && (
+      {act.rr != null && (
         <span className="text-[10px] font-semibold text-purple-400 bg-purple-500/10 border border-purple-500/30 rounded px-1.5 py-0.5 leading-none">
           {act.rr} RR
         </span>

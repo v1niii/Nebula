@@ -107,7 +107,7 @@ export const AccountCard = memo(function AccountCard({ account, launchStatus, ra
           {rank?.current?.name && (
             <span className="text-xs text-foreground truncate font-medium">
               {rank.current.name}
-              {rank.current.rr > 0 && (
+              {rank.current.rr != null && (
                 <span className="text-purple-400 font-semibold ml-1">{rank.current.rr} RR</span>
               )}
             </span>
