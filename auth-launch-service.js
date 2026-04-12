@@ -299,7 +299,10 @@ class AuthLaunchService {
             }
         } catch (e) { console.warn('SSID verification failed:', e.message); }
 
-        // SSID definitively expired → safe to clear and prompt re-login
+        // SSID definitively expired → safe to clear and prompt re-login.
+        // PRESERVE tdid (Trusted Device ID) so MFA isn't re-prompted on every
+        // session refresh. Only the ssid/clid/csid/sub session cookies need
+        // to go — tdid is the "this machine is trusted" token.
         console.log('Session truly expired. Reopening login page...');
         await this.closeRiotProcesses();
         await new Promise(r => setTimeout(r, 2000));
@@ -308,7 +311,21 @@ class AuthLaunchService {
         try {
             const content = await fs.readFile(authYamlPath, 'utf-8');
             const parsed = yaml.parse(content);
-            if (parsed?.['riot-login']) parsed['riot-login'].persist = null;
+            const existingCookies = parsed?.['riot-login']?.persist?.session?.cookies || [];
+            const tdidCookie = existingCookies.find(c => c?.name === 'tdid');
+            if (parsed?.['riot-login']) {
+                if (tdidCookie) {
+                    parsed['riot-login'].persist = {
+                        ...(parsed['riot-login'].persist || {}),
+                        session: {
+                            ...(parsed['riot-login'].persist?.session || {}),
+                            cookies: [tdidCookie],
+                        },
+                    };
+                } else {
+                    parsed['riot-login'].persist = null;
+                }
+            }
             await fs.writeFile(authYamlPath, yaml.stringify(parsed), 'utf-8');
         } catch {}
         for (const f of ['Config/lockfile', 'Config/lockfile_']) await fs.unlink(path.join(riotDir, f)).catch(() => {});
@@ -388,19 +405,44 @@ class AuthLaunchService {
         await this.closeRiotProcesses();
         await new Promise(r => setTimeout(r, 2000));
 
-        // Clear session but KEEP the tdid (trusted device ID) to avoid 2FA prompts
+        // Clear the SESSION cookies (ssid/clid/csid/sub) so the login page shows,
+        // but PRESERVE tdid (Trusted Device ID). tdid is the cookie Riot uses to
+        // remember "this machine was already verified via MFA" — wiping it
+        // forces MFA on every single login, which is exactly what was happening
+        // before this fix. Also preserves rso-authenticator.tdid.value if that
+        // alt location exists.
         const riotDir = this._riotClientDir();
         const authYamlPath = path.join(riotDir, 'Data', 'RiotGamesPrivateSettings.yaml');
         try {
             const content = await fs.readFile(authYamlPath, 'utf-8');
             const parsed = yaml.parse(content);
-            // Preserve rso-authenticator.tdid, clear riot-login session
-            if (parsed?.['riot-login']) parsed['riot-login'].persist = null;
+
+            const existingCookies = parsed?.['riot-login']?.persist?.session?.cookies || [];
+            const tdidCookie = existingCookies.find(c => c?.name === 'tdid');
+
+            if (parsed?.['riot-login']) {
+                if (tdidCookie) {
+                    // Keep the structure, but leave only the tdid cookie so the
+                    // next login's MFA check finds it and skips the prompt.
+                    parsed['riot-login'].persist = {
+                        ...(parsed['riot-login'].persist || {}),
+                        session: {
+                            ...(parsed['riot-login'].persist?.session || {}),
+                            cookies: [tdidCookie],
+                        },
+                    };
+                } else {
+                    parsed['riot-login'].persist = null;
+                }
+            }
             await fs.writeFile(authYamlPath, yaml.stringify(parsed), 'utf-8');
         } catch {
             // If file doesn't exist, that's fine - login page will show
         }
-        for (const f of ['Data/RiotClientPrivateSettings.yaml', 'Config/lockfile', 'Config/lockfile_']) {
+        // Only delete the lockfile(s) — keep RiotClientPrivateSettings.yaml intact
+        // because it may also contain tdid-related trust state that, if wiped,
+        // triggers MFA on the next login.
+        for (const f of ['Config/lockfile', 'Config/lockfile_']) {
             await fs.unlink(path.join(riotDir, f)).catch(() => {});
         }
 
@@ -568,7 +610,19 @@ class AuthLaunchService {
                 const v = parseInt(rawValue, 10);
                 if (!Number.isNaN(v)) result.intSettings.push({ settingEnum: key, value: v });
             } else if (key.startsWith('EAresStringSettingName::')) {
-                result.stringSettings.push({ settingEnum: key, value: rawValue });
+                // RiotUserSettings.ini wraps string values in double quotes
+                // with C-style escaping when the value contains special chars
+                // (notably SavedCrosshairProfileData, whose JSON blob has
+                // embedded quotes). Cloud stores the same values unescaped.
+                // Unwrap so the two formats match — otherwise backfilling .ini
+                // into the cloud blob produces a double-escaped value that
+                // Valorant rejects on read-back with "Error retrieving
+                // settings from server".
+                let v = rawValue;
+                if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
+                    v = v.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+                }
+                result.stringSettings.push({ settingEnum: key, value: v });
             }
         }
         return result;

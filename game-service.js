@@ -22,18 +22,28 @@ const RIOT_CLIENT_PLATFORM = Buffer.from(JSON.stringify({
     platformOSVersion: '10.0.19042.1.256.64bit', platformChipset: 'Unknown',
 })).toString('base64');
 
-// Region → { shard, region } for the glz/pd URL templates.
-// BR and LATAM have their OWN PD/GLZ subdomains for PVP endpoints
-// (pd.br.a.pvp.net, pd.latam.a.pvp.net) — they only share the NA shard for
-// the player-preferences SGP routing in auth-service.js, not here.
+// Region → pd/glz URL components.
+//
+// Riot's player-data endpoints live on FOUR physical shards — `pd.na`,
+// `pd.eu`, `pd.ap`, `pd.kr`. BR and LATAM do NOT have their own pd shard
+// (`pd.br.a.pvp.net` returns NXDOMAIN); they are served by `pd.na`.
+//
+// GLZ uses a two-part `glz-{regionTag}-1.{shard}` structure, so BR/LATAM
+// keep their own region tag (for GLZ routing) while sharing the NA shard:
+//   NA    → pd.na.a.pvp.net     + glz-na-1.na.a.pvp.net
+//   BR    → pd.na.a.pvp.net     + glz-br-1.na.a.pvp.net
+//   LATAM → pd.na.a.pvp.net     + glz-latam-1.na.a.pvp.net
+//   EU    → pd.eu.a.pvp.net     + glz-eu-1.eu.a.pvp.net
+//   AP    → pd.ap.a.pvp.net     + glz-ap-1.ap.a.pvp.net
+//   KR    → pd.kr.a.pvp.net     + glz-kr-1.kr.a.pvp.net
 const REGION_MAP = {
-    NA:    { shard: 'na',    region: 'na' },
-    LATAM: { shard: 'latam', region: 'latam' },
-    BR:    { shard: 'br',    region: 'br' },
-    EU:    { shard: 'eu',    region: 'eu' },
-    AP:    { shard: 'ap',    region: 'ap' },
-    KR:    { shard: 'kr',    region: 'kr' },
-    PBE:   { shard: 'pbe',   region: 'pbe' },
+    NA:    { pdShard: 'na', glzRegion: 'na',    glzShard: 'na' },
+    LATAM: { pdShard: 'na', glzRegion: 'latam', glzShard: 'na' },
+    BR:    { pdShard: 'na', glzRegion: 'br',    glzShard: 'na' },
+    EU:    { pdShard: 'eu', glzRegion: 'eu',    glzShard: 'eu' },
+    AP:    { pdShard: 'ap', glzRegion: 'ap',    glzShard: 'ap' },
+    KR:    { pdShard: 'kr', glzRegion: 'kr',    glzShard: 'kr' },
+    PBE:   { pdShard: 'pbe', glzRegion: 'pbe',  glzShard: 'pbe' },
 };
 
 function regionInfo(region) {
@@ -41,12 +51,12 @@ function regionInfo(region) {
 }
 
 function pdUrl(region) {
-    return `https://pd.${regionInfo(region).shard}.a.pvp.net`;
+    return `https://pd.${regionInfo(region).pdShard}.a.pvp.net`;
 }
 
 function glzUrl(region) {
-    const { shard, region: reg } = regionInfo(region);
-    return `https://glz-${shard}-1.${reg}.a.pvp.net`;
+    const r = regionInfo(region);
+    return `https://glz-${r.glzRegion}-1.${r.glzShard}.a.pvp.net`;
 }
 
 // --- Riot Client version header (required by pd/glz endpoints) ---

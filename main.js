@@ -365,12 +365,17 @@ ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) =>
         // guess from import time.
         const healRegion = async (accountId, current) => {
             if (regionVerifiedThisSession.has(accountId)) return current;
-            const pas = await authService._getValorantRegionFromPas(accountId === fromId ? srcAuth.accessToken : dstAuth.accessToken);
-            if (!pas) return current; // don't burn the retry budget on a failed PAS call
+            const auth = accountId === fromId ? srcAuth : dstAuth;
+            const probed = await authService._probeValorantRegion({
+                accessToken: auth.accessToken,
+                entitlementsToken: auth.entitlementsToken,
+                puuid: accountId,
+            });
+            if (!probed) return current; // don't burn the retry budget on a failed probe
             regionVerifiedThisSession.add(accountId);
-            if (pas !== current) {
-                authService.updateAccountRegion(accountId, pas);
-                return pas;
+            if (probed !== current) {
+                authService.updateAccountRegion(accountId, probed);
+                return probed;
             }
             return current;
         };
@@ -395,8 +400,13 @@ ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) =>
             authService.getCloudSettings(srcAuth.accessToken, srcAuth.entitlementsToken, fromAcc.region),
             authService.getCloudSettings(dstAuth.accessToken, dstAuth.entitlementsToken, toAcc.region),
         ]);
+        // Decode both blobs. Use the DESTINATION's compression method for the
+        // encode round-trip so the uploaded blob matches what target's Valorant
+        // client can read back — source and target can be in different legacy
+        // formats, and mismatching them produces the in-game "Error retrieving
+        // settings from server" error.
         const { settings: srcSettings } = authService._decodeSettingsBlob(srcBlob.data);
-        const { settings: dstSettings } = authService._decodeSettingsBlob(dstBlob.data);
+        const { settings: dstSettings, method: dstMethod } = authService._decodeSettingsBlob(dstBlob.data);
 
         // CRITICAL: Valorant only persists non-default values, and some keys
         // (MouseSensitivityADS/Zoomed, gamepad deadzones, etc.) never sync to cloud.
@@ -416,7 +426,7 @@ ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) =>
         }
 
         const merged = authService.mergeSelectiveSettings(srcSettings, dstSettings, cats, KEY_PATTERNS, EXCLUDE_KEY_PATTERNS, ADDITIVE_CATEGORIES);
-        const newData = authService._encodeSettingsBlob(merged);
+        const newData = authService._encodeSettingsBlob(merged, dstMethod);
         await authService.putCloudSettings(dstAuth.accessToken, dstAuth.entitlementsToken, toAcc.region, { data: newData });
 
         // Local .ini merge runs the same pattern set against the per-account
@@ -506,19 +516,22 @@ async function resolveLiveAuthTokens(accountId) {
 
     let region = account.region;
     if (!regionVerifiedThisSession.has(accountId)) {
-        const pasRegion = await authService._getValorantRegionFromPas(accessToken);
-        if (pasRegion) {
-            // Only burn the one-shot retry budget on a SUCCESSFUL PAS response.
-            // Silent PAS failures (network, rate-limit, 401) previously marked
-            // the account verified and blocked further attempts this session.
+        // Probe every pd shard in parallel and pick whichever returns
+        // 200/404 for this puuid's MMR. This is the authoritative source —
+        // PAS chat affinity can return chat-POP codes (e.g. `us-br1`) that
+        // don't match the game region, so we don't trust it anymore.
+        const probedRegion = await authService._probeValorantRegion({
+            accessToken, entitlementsToken, puuid: account.id,
+        });
+        if (probedRegion) {
             regionVerifiedThisSession.add(accountId);
-            if (pasRegion !== region) {
-                console.log(`[main] region self-heal: ${account.displayName || accountId.slice(0, 8)} ${region} → ${pasRegion}`);
-                authService.updateAccountRegion(accountId, pasRegion);
-                region = pasRegion;
+            if (probedRegion !== region) {
+                console.log(`[main] region self-heal: ${account.displayName || accountId.slice(0, 8)} ${region} → ${probedRegion}`);
+                authService.updateAccountRegion(accountId, probedRegion);
+                region = probedRegion;
             }
         } else {
-            console.warn(`[main] PAS region check failed for ${account.displayName || accountId.slice(0, 8)} — will retry on next call`);
+            console.warn(`[main] region probe failed for ${account.displayName || accountId.slice(0, 8)} — will retry on next call`);
         }
     }
 
@@ -533,7 +546,7 @@ async function resolveLiveAuthTokens(accountId) {
 async function scanAllAccountRegions() {
     const accounts = authService.getAccountsList?.() || authService.accounts || [];
     if (!accounts.length) return;
-    console.log(`[main] region scan: checking PAS for ${accounts.length} account(s)`);
+    console.log(`[main] region scan: probing ${accounts.length} account(s)`);
     let healed = 0, failed = 0;
     for (const acc of accounts) {
         if (regionVerifiedThisSession.has(acc.id)) continue;
@@ -545,15 +558,17 @@ async function scanAllAccountRegions() {
                 if (snap?.ssid) cookies = snap;
             }
             if (!cookies?.ssid) { failed++; continue; }
-            const { accessToken } = await authService.getCloudAuthTokens(
+            const { accessToken, entitlementsToken } = await authService.getCloudAuthTokens(
                 cookies.ssid, cookies.clid, cookies.csid, cookies.tdid
             );
-            const pasRegion = await authService._getValorantRegionFromPas(accessToken);
-            if (!pasRegion) { failed++; continue; }
+            const probedRegion = await authService._probeValorantRegion({
+                accessToken, entitlementsToken, puuid: acc.id,
+            });
+            if (!probedRegion) { failed++; continue; }
             regionVerifiedThisSession.add(acc.id);
-            if (pasRegion !== acc.region) {
-                console.log(`[main] region scan heal: ${acc.displayName || acc.id.slice(0, 8)} ${acc.region} → ${pasRegion}`);
-                authService.updateAccountRegion(acc.id, pasRegion);
+            if (probedRegion !== acc.region) {
+                console.log(`[main] region scan heal: ${acc.displayName || acc.id.slice(0, 8)} ${acc.region} → ${probedRegion}`);
+                authService.updateAccountRegion(acc.id, probedRegion);
                 healed++;
             }
         } catch (e) {

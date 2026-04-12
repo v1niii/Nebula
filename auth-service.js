@@ -365,16 +365,18 @@ class AuthService {
     return res.json();
   }
 
-  // Decode a cloud settings blob (base64 → decompress → JSON).
-  // Tries gzip first (current Riot format per the player-preferences-*.pp.sgp
-  // infrastructure), then raw deflate + zlib deflate for backward compat with
-  // any legacy blobs. Returns a named tag so the caller can round-trip.
+  // Decode a cloud settings blob (base64 → decompress → JSON). The order
+  // matters: Riot currently serves raw deflate, so inflateRaw comes first
+  // and becomes the round-trip format. gzip/zlib are fallbacks for legacy
+  // blobs. Returns an explicit string tag so the encoder can round-trip
+  // safely even when arrow-function source text isn't available (e.g.
+  // minified bundles, different Node versions).
   _decodeSettingsBlob(base64Data) {
     const buf = Buffer.from(base64Data, 'base64');
     const tryMethods = [
-      { name: 'gzip', fn: () => zlib.gunzipSync(buf) },
       { name: 'inflateRaw', fn: () => zlib.inflateRawSync(buf) },
-      { name: 'inflate', fn: () => zlib.inflateSync(buf) },
+      { name: 'gzip',       fn: () => zlib.gunzipSync(buf) },
+      { name: 'inflate',    fn: () => zlib.inflateSync(buf) },
     ];
     let lastErr;
     for (const m of tryMethods) {
@@ -386,16 +388,16 @@ class AuthService {
     throw new Error('Could not decode settings blob: ' + lastErr?.message);
   }
 
-  // Encode settings back to base64. ALWAYS uses gzip since that's what the
-  // current playerpreferences SGP API expects; the `method` argument is kept
-  // for signature compatibility but ignored — previously we echoed back the
-  // decode method, but source and target blobs can be in different legacy
-  // formats, and round-tripping source's format into target silently corrupts
-  // the upload (Valorant reads back defaults → user loses saved crosshair
-  // profiles, etc.).
-  _encodeSettingsBlob(settings /* , method */) {
+  // Encode settings back to base64 using the same compression method that
+  // decoded them. Must match what Valorant's client expects on read-back,
+  // otherwise it fails with "Error retrieving settings from server" and
+  // falls back to defaults. Defaults to inflateRaw (Riot's current format)
+  // if the caller lost track of the decode method.
+  _encodeSettingsBlob(settings, method = 'inflateRaw') {
     const buf = Buffer.from(JSON.stringify(settings), 'utf-8');
-    return zlib.gzipSync(buf).toString('base64');
+    if (method === 'gzip')    return zlib.gzipSync(buf).toString('base64');
+    if (method === 'inflate') return zlib.deflateSync(buf).toString('base64');
+    return zlib.deflateRawSync(buf).toString('base64');
   }
 
   // Mirror source cloud settings onto target for each enabled category. "Mirror"
@@ -506,11 +508,104 @@ class AuthService {
       const payloadB64 = jwt.split('.')[1];
       const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8'));
       const affinity = (payload.affinity || '').toLowerCase();
+      // STRICT match only — the /pas/v1/service/chat affinity reflects the
+      // CHAT server, not the Valorant game region. Values like `us-br1`
+      // (chat POP in Brazil) can actually belong to accounts playing on the
+      // NA game shard, so prefix-guessing here mis-labels accounts. Only
+      // accept the canonical exact values; fall through to the shard
+      // probe for anything else.
       const map = { na: 'NA', eu: 'EU', ap: 'AP', kr: 'KR', br: 'BR', latam: 'LATAM', pbe: 'PBE' };
       return map[affinity] || null;
     } catch {
       return null;
     }
+  }
+
+  // Authoritative region detection by probing every Valorant pd shard in
+  // parallel and picking whichever one returns 200 for the player's own
+  // MMR lookup. This is the ground truth: the shard that serves the data
+  // IS the game region, regardless of what PAS chat affinity claims.
+  // Returns the Nebula-internal region name (NA/EU/AP/KR/BR/LATAM) or null
+  // if no shard responds 200 (expired session, network error, etc.).
+  async _probeValorantRegion({ accessToken, entitlementsToken, puuid }) {
+    // PRIMARY: decode the access token JWT. Riot encodes the Valorant game
+    // region as `pp.c` in the token payload — set at token issuance based
+    // on the account's actual game shard. This is the ground truth and
+    // requires zero API calls.
+    try {
+      const parts = accessToken.split('.');
+      if (parts.length === 3) {
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8'));
+        const c = (payload?.pp?.c || '').toLowerCase();
+        const directMap = { eu: 'EU', na: 'NA', us: 'NA', ap: 'AP', kr: 'KR', br: 'BR', la: 'LATAM', la1: 'LATAM', la2: 'LATAM', latam: 'LATAM', pbe: 'PBE' };
+        if (directMap[c]) return directMap[c];
+        console.warn(`[auth] unknown pp.c value in access token: ${c}`);
+      }
+    } catch (e) {
+      console.warn(`[auth] access token JWT parse failed: ${e.message}`);
+    }
+
+    // FALLBACK: match-history probe. The access token `pp.c` should always
+    // be present, but if Riot changes the JWT shape or the value is an
+    // unrecognized region code, probe the shards directly. match-history is
+    // the only pd endpoint that reliably discriminates (mmr returns 200 on
+    // every shard with placeholder data).
+    const shards = [
+      { code: 'na', region: 'NA' },
+      { code: 'eu', region: 'EU' },
+      { code: 'ap', region: 'AP' },
+      { code: 'kr', region: 'KR' },
+    ];
+    const build = await getRiotClientBuild();
+    const version = await this._getRiotClientVersionForHeader();
+    const headers = {
+      'Authorization': `Bearer ${accessToken}`,
+      'X-Riot-Entitlements-JWT': entitlementsToken,
+      'X-Riot-ClientPlatform': RIOT_CLIENT_PLATFORM,
+      'X-Riot-ClientVersion': version,
+      'User-Agent': `RiotClient/${build} rso-auth (Windows;10;;Professional, x64)`,
+    };
+    const results = await Promise.all(shards.map(async ({ code, region }) => {
+      try {
+        const res = await fetch(
+          `https://pd.${code}.a.pvp.net/match-history/v1/history/${puuid}?endIndex=1`,
+          { agent: riotAgent, headers },
+        );
+        return { region, status: res.status };
+      } catch {
+        return { region, status: 0 };
+      }
+    }));
+    const winner = results.find(r => r.status === 200);
+    if (!winner) return null;
+
+    // pd.na serves NA + BR + LATAM. Disambiguate via userInfo.country.
+    if (winner.region === 'NA') {
+      try {
+        const userInfo = await this._getUserInfo(accessToken);
+        const country = (userInfo.country || '').toLowerCase();
+        if (['bra', 'br'].includes(country)) return 'BR';
+        const latamCountries = ['arg','ar','chl','cl','col','co','per','pe','mex','mx','ury','uy','pry','py','ecu','ec','ven','ve','bol','bo','cri','cr','pan','pa','gtm','gt','hnd','hn','slv','sv','nic','ni','dom','do','cub','cu'];
+        if (latamCountries.includes(country)) return 'LATAM';
+      } catch { /* fall through to NA */ }
+    }
+    return winner.region;
+  }
+
+  // Lazy-cached Riot client version — required by pd/glz endpoints. Mirrors
+  // game-service.js's getRiotClientVersion but lives here so auth-service
+  // doesn't need to import from game-service (circular).
+  async _getRiotClientVersionForHeader() {
+    if (this._cachedClientVersion) return this._cachedClientVersion;
+    try {
+      const res = await fetch('https://valorant-api.com/v1/version');
+      const data = await res.json();
+      if (data.status === 200 && data.data?.riotClientVersion) {
+        this._cachedClientVersion = data.data.riotClientVersion;
+        return this._cachedClientVersion;
+      }
+    } catch { /* fall through */ }
+    return 'release-09.02-shipping-62-2817827';
   }
 
   _detectRegion(userInfo) {
