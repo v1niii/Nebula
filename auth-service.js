@@ -529,17 +529,41 @@ class AuthService {
   // if no shard responds 200 (expired session, network error, etc.).
   async _probeValorantRegion({ accessToken, entitlementsToken, puuid }) {
     // PRIMARY: decode the access token JWT. Riot encodes the Valorant game
-    // region as `pp.c` in the token payload — set at token issuance based
-    // on the account's actual game shard. This is the ground truth and
-    // requires zero API calls.
+    // region cluster as `pp.c` — set at token issuance. Cluster codes:
+    //   "am"  → Americas (NA/BR/LATAM — needs userInfo.country to split)
+    //   "eu"  → EU
+    //   "ap"  → AP
+    //   "kr"  → KR
+    //   "pbe" → PBE
+    // This is the ground truth and requires at most one extra API call
+    // (userInfo, only for Americas accounts).
     try {
       const parts = accessToken.split('.');
       if (parts.length === 3) {
         const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8'));
         const c = (payload?.pp?.c || '').toLowerCase();
-        const directMap = { eu: 'EU', na: 'NA', us: 'NA', ap: 'AP', kr: 'KR', br: 'BR', la: 'LATAM', la1: 'LATAM', la2: 'LATAM', latam: 'LATAM', pbe: 'PBE' };
-        if (directMap[c]) return directMap[c];
-        console.warn(`[auth] unknown pp.c value in access token: ${c}`);
+
+        if (c === 'eu')  return 'EU';
+        if (c === 'ap')  return 'AP';
+        if (c === 'kr')  return 'KR';
+        if (c === 'pbe') return 'PBE';
+
+        if (c === 'am' || c === 'na' || c === 'us' || c === 'br' || c === 'latam' || c === 'la' || c === 'la1' || c === 'la2') {
+          // Americas cluster — NA/BR/LATAM all share pd.na but have distinct
+          // glz-{region}-1.na prefixes. Disambiguate via userInfo.country,
+          // which is the account's creation country and maps cleanly to the
+          // real game region.
+          try {
+            const userInfo = await this._getUserInfo(accessToken);
+            const country = (userInfo.country || '').toLowerCase();
+            if (['bra', 'br'].includes(country)) return 'BR';
+            const latamCountries = ['arg','ar','chl','cl','col','co','per','pe','mex','mx','ury','uy','pry','py','ecu','ec','ven','ve','bol','bo','cri','cr','pan','pa','gtm','gt','hnd','hn','slv','sv','nic','ni','dom','do','cub','cu'];
+            if (latamCountries.includes(country)) return 'LATAM';
+            return 'NA';
+          } catch { return 'NA'; }
+        }
+
+        if (c) console.warn(`[auth] unknown pp.c cluster "${c}" — falling back to shard probe`);
       }
     } catch (e) {
       console.warn(`[auth] access token JWT parse failed: ${e.message}`);
