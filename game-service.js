@@ -1125,10 +1125,11 @@ async function getMatchInfo({ accessToken, entitlementsToken, region, puuid }, o
 // Earlier code used `Rank || CompetitiveTier` which surfaced the peak —
 // wrong for "ended in" semantics. Flipped to prefer CompetitiveTier so the
 // badge matches what the player actually finished the act at.
-function buildActHistory(mmrData, seasons, ranks, limit = 3) {
+function buildActHistory(mmrData, seasons, ranks, limit = 3, excludeSeasonId = null) {
     const seasonal = mmrData?.QueueSkills?.competitive?.SeasonalInfoBySeasonID || {};
     const entries = [];
     for (const [seasonId, season] of Object.entries(seasonal)) {
+        if (excludeSeasonId && seasonId === excludeSeasonId) continue; // skip current act
         const meta = seasons[seasonId];
         if (!meta || !meta.startTime) continue; // skip episodes / unknown UUIDs
         const games = season?.NumberOfGames || 0;
@@ -1157,22 +1158,31 @@ function buildActHistory(mmrData, seasons, ranks, limit = 3) {
     return entries.slice(0, limit);
 }
 
-// Compute the ALL-TIME peak tier from the MMR response's seasonal data AND
-// identify which season (act) that peak was reached in. Returns { tier, seasonId }.
-// `QueueSkills.competitive.SeasonalInfoBySeasonID[season].WinsByTier` stores
-// every tier the player has ever won at, across every act ever — this is the
-// only reliable source for historical peak tier that goes beyond the
-// 100-game window of the competitiveupdates endpoint.
+// Compute the ALL-TIME peak from the MMR response's seasonal data and
+// identify the season (act) that peak was reached in. Returns
+// { tier, rr, seasonId, games }.
 //
-// Tie-breaker: when multiple seasons share the same peak tier (e.g. you hit
-// Immortal 3 in three different acts), prefer the MOST RECENT season — that's
-// the more relevant data point for "your peak rank". Old code used object key
-// iteration order which is undefined and could surface a years-old episode
-// instead of the act you actually played most recently.
+// `QueueSkills.competitive.SeasonalInfoBySeasonID[season].WinsByTier` stores
+// every tier the player has ever won at, across every act — this is the
+// only source for historical peak tier beyond the 100-game window of the
+// competitiveupdates endpoint.
+//
+// Selection logic:
+//   1. First pass: find the highest tier the player ever hit (peakTier).
+//   2. Second pass: among seasons that hit peakTier, prefer those where the
+//      ENDING tier (CompetitiveTier/Rank) also equals peakTier. These are
+//      the only seasons whose RankedRating field is meaningful for "peak RR"
+//      — for any other season, RankedRating is the value at a LOWER tier
+//      after dropping back down, which would misrepresent the player's peak.
+//   3. Among matching seasons, pick the one with the highest RankedRating.
+//   4. Tie-break by recency (most recent startTime wins).
+//   5. If NO season ended at the peak tier, fall back to the most recent
+//      season that hit it, and return RR=0 (we can't infer peak RR from
+//      season-level data alone).
 function findAllTimePeak(mmrData, seasonsMeta = {}) {
     const seasonal = mmrData?.QueueSkills?.competitive?.SeasonalInfoBySeasonID || {};
 
-    // First pass: find the maximum peak tier across all seasons.
+    // Pass 1: max tier ever hit
     let peakTier = 0;
     for (const season of Object.values(seasonal)) {
         for (const tierStr of Object.keys(season?.WinsByTier || {})) {
@@ -1182,28 +1192,46 @@ function findAllTimePeak(mmrData, seasonsMeta = {}) {
         if ((season?.Rank ?? 0) > peakTier) peakTier = season.Rank;
         if ((season?.CompetitiveTier ?? 0) > peakTier) peakTier = season.CompetitiveTier;
     }
-    if (peakTier === 0) return { tier: 0, seasonId: null };
+    if (peakTier === 0) return { tier: 0, rr: 0, seasonId: null, games: 0 };
 
-    // Second pass: of all seasons that hit the peak tier, pick the MOST
-    // RECENT by startTime. Falls back to the first match found if metadata
-    // is missing.
-    let peakSeasonId = null;
-    let peakStart = -Infinity;
+    // Pass 2: collect all candidates that hit peakTier, with their effective
+    // peak-RR (RankedRating only if they ended AT peakTier).
+    const candidates = [];
     for (const [seasonId, season] of Object.entries(seasonal)) {
-        const seasonHitPeak =
+        const hitPeak =
             !!(season?.WinsByTier?.[String(peakTier)]) ||
             (season?.Rank ?? 0) === peakTier ||
             (season?.CompetitiveTier ?? 0) === peakTier;
-        if (!seasonHitPeak) continue;
+        if (!hitPeak) continue;
+        const endTier = (season?.CompetitiveTier ?? 0) || (season?.Rank ?? 0);
+        const endedAtPeak = endTier === peakTier;
+        const effRR = endedAtPeak ? (season?.RankedRating || 0) : 0;
         const startTime = seasonsMeta[seasonId]?.startTime
             ? new Date(seasonsMeta[seasonId].startTime).getTime()
             : 0;
-        if (startTime > peakStart) {
-            peakStart = startTime;
-            peakSeasonId = seasonId;
-        }
+        candidates.push({
+            seasonId,
+            endedAtPeak,
+            effRR,
+            startTime,
+            games: season?.NumberOfGames || 0,
+        });
     }
-    return { tier: peakTier, seasonId: peakSeasonId };
+
+    // Sort: ended-at-peak first, then highest RR, then most recent.
+    candidates.sort((a, b) => {
+        if (a.endedAtPeak !== b.endedAtPeak) return a.endedAtPeak ? -1 : 1;
+        if (b.effRR !== a.effRR) return b.effRR - a.effRR;
+        return b.startTime - a.startTime;
+    });
+
+    const winner = candidates[0];
+    return {
+        tier: peakTier,
+        rr: winner?.effRR || 0,
+        seasonId: winner?.seasonId || null,
+        games: winner?.games || 0,
+    };
 }
 
 // Walks the competitiveupdates endpoint to find the highest (tier, RR) ever
@@ -1273,36 +1301,30 @@ async function getAccountRank(ctx) {
 
         const allTimePeak = findAllTimePeak(data, seasons);
         let peakTier = allTimePeak.tier;
+        let peakRR = allTimePeak.rr;
         let peakSeasonId = allTimePeak.seasonId;
-        if (currentTier > peakTier) { peakTier = currentTier; peakSeasonId = currentSeasonId; }
-        // Peak RR resolution chain (best → worst):
-        //   1. recent competitiveupdates window (<= ~100 games) IF the peak
-        //      tier is in that window
-        //   2. SeasonalInfoBySeasonID[peakSeasonId].RankedRating — ENDING
-        //      RR for the peak season, only valid if the player ended that
-        //      season at the peak tier (otherwise it's a lower-tier value)
-        //   3. current RR if current tier == peak tier
-        //   4. 0 (no signal)
-        let peakRR = 0;
-        if (recentPeak.tier === peakTier) peakRR = recentPeak.rr;
-        const peakSeasonalInfo = peakSeasonId
-            ? data?.QueueSkills?.competitive?.SeasonalInfoBySeasonID?.[peakSeasonId]
-            : null;
-        if (peakRR === 0 && peakSeasonalInfo) {
-            const seasonEndTier = peakSeasonalInfo.CompetitiveTier || peakSeasonalInfo.Rank || 0;
-            if (seasonEndTier === peakTier && peakSeasonalInfo.RankedRating > 0) {
-                peakRR = peakSeasonalInfo.RankedRating;
-            }
+        let peakGames = allTimePeak.games;
+        if (currentTier > peakTier) {
+            peakTier = currentTier;
+            peakRR = currentRR;
+            peakSeasonId = currentSeasonId;
+            peakGames = data?.QueueSkills?.competitive?.SeasonalInfoBySeasonID?.[currentSeasonId]?.NumberOfGames || 0;
         }
+        // Augment with the recent competitiveupdates window — only takes the
+        // higher value if it actually beats what we got from seasonal data.
+        if (recentPeak.tier === peakTier && recentPeak.rr > peakRR) peakRR = recentPeak.rr;
         if (currentTier === peakTier && currentRR > peakRR) peakRR = currentRR;
+
+        const currentSeasonal = currentSeasonId ? data?.QueueSkills?.competitive?.SeasonalInfoBySeasonID?.[currentSeasonId] : null;
+        const currentGames = currentSeasonal?.NumberOfGames || 0;
 
         const currentMeta = ranks[currentTier];
         const peakMeta = ranks[peakTier];
         const peakAct = peakSeasonId ? seasons[peakSeasonId]?.full : null;
-        logCall('mmr.account', 'GET', url, mmrRes.status, `cur=${currentTier}/${currentRR}/${currentAct || '?'} peak=${peakTier}/${peakRR}/${peakAct || '?'}`);
+        logCall('mmr.account', 'GET', url, mmrRes.status, `cur=${currentTier}/${currentRR}/${currentAct || '?'}/${currentGames}g peak=${peakTier}/${peakRR}/${peakAct || '?'}/${peakGames}g`);
         return {
-            current: currentMeta ? { tier: currentTier, name: currentMeta.name, icon: currentMeta.icon, rr: currentRR, act: currentAct } : null,
-            peak: peakMeta ? { tier: peakTier, name: peakMeta.name, icon: peakMeta.icon, rr: peakRR, act: peakAct } : null,
+            current: currentMeta ? { tier: currentTier, name: currentMeta.name, icon: currentMeta.icon, rr: currentRR, act: currentAct, games: currentGames } : null,
+            peak: peakMeta ? { tier: peakTier, name: peakMeta.name, icon: peakMeta.icon, rr: peakRR, act: peakAct, games: peakGames } : null,
         };
     } catch (e) {
         console.warn(`[game] account rank error: ${e.message}`);
@@ -1384,29 +1406,30 @@ async function getPlayerStats(ctx, targetPuuid) {
 
             const allTime = findAllTimePeak(data, seasons);
             let peakTier = allTime.tier;
+            let peakRR = allTime.rr;
             let peakSeasonId = allTime.seasonId;
-            if (curTier > peakTier) { peakTier = curTier; peakSeasonId = curSeasonId; }
-            let peakRR = 0;
-            if (recentPeak.tier === peakTier) peakRR = recentPeak.rr;
-            const peakSeasonal = peakSeasonId
-                ? data?.QueueSkills?.competitive?.SeasonalInfoBySeasonID?.[peakSeasonId]
-                : null;
-            if (peakRR === 0 && peakSeasonal) {
-                const seasonEndTier = peakSeasonal.CompetitiveTier || peakSeasonal.Rank || 0;
-                if (seasonEndTier === peakTier && peakSeasonal.RankedRating > 0) {
-                    peakRR = peakSeasonal.RankedRating;
-                }
+            let peakGames = allTime.games;
+            if (curTier > peakTier) {
+                peakTier = curTier;
+                peakRR = curRR;
+                peakSeasonId = curSeasonId;
+                peakGames = data?.QueueSkills?.competitive?.SeasonalInfoBySeasonID?.[curSeasonId]?.NumberOfGames || 0;
             }
+            if (recentPeak.tier === peakTier && recentPeak.rr > peakRR) peakRR = recentPeak.rr;
             if (curTier === peakTier && curRR > peakRR) peakRR = curRR;
 
+            const currentSeasonal = curSeasonId ? data?.QueueSkills?.competitive?.SeasonalInfoBySeasonID?.[curSeasonId] : null;
+            const currentGames = currentSeasonal?.NumberOfGames || 0;
+
             const peakAct = peakSeasonId ? seasons[peakSeasonId]?.full : null;
-            current = ranks[curTier] ? { tier: curTier, name: ranks[curTier].name, icon: ranks[curTier].icon, rr: curRR, act: curAct } : null;
-            peak = ranks[peakTier] ? { tier: peakTier, name: ranks[peakTier].name, icon: ranks[peakTier].icon, rr: peakRR, act: peakAct } : null;
-            // Last 3 acts the player actually played — useful for judging
-            // consistency better than peak alone (a Diamond who spent 3 acts
-            // at Plat is read differently than one who hit Diamond each act).
-            actHistory = buildActHistory(data, seasons, ranks, 3);
-            logCall('stats.mmr', 'GET', mmrUrl, res.status, `cur=${curTier}/${curRR}/${curAct || '?'} peak=${peakTier}/${peakRR}/${peakAct || '?'} acts=${actHistory.length}`);
+            current = ranks[curTier] ? { tier: curTier, name: ranks[curTier].name, icon: ranks[curTier].icon, rr: curRR, act: curAct, games: currentGames } : null;
+            peak = ranks[peakTier] ? { tier: peakTier, name: ranks[peakTier].name, icon: ranks[peakTier].icon, rr: peakRR, act: peakAct, games: peakGames } : null;
+            // Last 3 acts the player played, EXCLUDING the current act — the
+            // current act has its own card already and showing it twice is
+            // redundant. Pass the current season id so buildActHistory can
+            // skip it.
+            actHistory = buildActHistory(data, seasons, ranks, 3, curSeasonId);
+            logCall('stats.mmr', 'GET', mmrUrl, res.status, `cur=${curTier}/${curRR}/${curAct || '?'}/${currentGames}g peak=${peakTier}/${peakRR}/${peakAct || '?'}/${peakGames}g acts=${actHistory.length}`);
         }
     } catch (e) { console.warn(`[game] stats.mmr error: ${e.message}`); }
 

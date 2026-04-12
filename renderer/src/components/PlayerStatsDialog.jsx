@@ -341,7 +341,9 @@ function RankCard({ label, icon: Icon, rank, showAct = false }) {
               </span>
             )}
             {showAct && rank.act && (
-              <p className="text-[10px] text-muted-foreground/80 truncate mt-1">{rank.act}</p>
+              <p className="text-[10px] text-muted-foreground/80 truncate mt-1">
+                {rank.act}{rank.games > 0 && ` · ${rank.games} games`}
+              </p>
             )}
           </div>
         </div>
