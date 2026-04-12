@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { User, Trophy, TrendingUp, Swords, Ban, CheckCircle2 } from 'lucide-react'
+import { User, Trophy, TrendingUp, Swords, Ban, CheckCircle2, History } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
@@ -16,6 +16,7 @@ function PlayerStatsSkeleton() {
         <Skeleton className="h-[76px] rounded-md" />
         <Skeleton className="h-[76px] rounded-md" />
       </div>
+      <Skeleton className="h-[88px] rounded-md" />
       <Skeleton className="h-8 rounded-md" />
       <Separator />
       <Skeleton className="h-3 w-32" />
@@ -157,6 +158,23 @@ export function PlayerStatsDialog({ open, onOpenChange, player, viewerAccountId,
               <RankCard label="Current" icon={Trophy} rank={stats.current} showAct />
               <RankCard label="Peak" icon={TrendingUp} rank={stats.peak} showAct />
             </div>
+
+            {/* Last 3 acts — shows the rank this player ENDED each of the
+                previous acts in. Better signal than peak alone for judging
+                consistency (tracker.gg-style). */}
+            {stats.actHistory?.length > 0 && (
+              <div className="rounded-md border bg-card p-3 space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <History className="h-3 w-3 text-muted-foreground shrink-0" />
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">Last {stats.actHistory.length} Acts</p>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {stats.actHistory.map((act) => (
+                    <ActHistoryCell key={act.seasonId} act={act} />
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Blacklist control — hidden when viewing yourself */}
             {player?.puuid === viewerAccountId ? null : blacklistEntry ? (
@@ -308,6 +326,28 @@ function RankCard({ label, icon: Icon, rank, showAct = false }) {
       ) : (
         <p className="text-sm text-muted-foreground">Unranked</p>
       )}
+    </div>
+  )
+}
+
+function ActHistoryCell({ act }) {
+  // Show the rank icon + name + act label stacked. Compact so three fit in a
+  // single row. Falls back to Unranked text when the tier has no icon.
+  return (
+    <div className="rounded-md border bg-card/60 p-2 flex flex-col items-center text-center">
+      {act.icon ? (
+        <img src={act.icon} alt={act.name} className="h-10 w-10" title={`${act.name}${act.rr ? ` · ${act.rr} RR` : ''} · ${act.games} games`} />
+      ) : (
+        <div className="h-10 w-10 flex items-center justify-center">
+          <span className="text-[10px] text-muted-foreground">—</span>
+        </div>
+      )}
+      <p className="text-[10px] font-semibold leading-tight mt-0.5 truncate max-w-full" title={act.name}>
+        {act.name}
+      </p>
+      <p className="text-[9px] text-muted-foreground leading-tight mt-0.5 truncate max-w-full" title={act.act}>
+        {act.act}
+      </p>
     </div>
   )
 }

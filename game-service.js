@@ -335,13 +335,15 @@ async function ensureSeasons() {
                 name: s.displayName,
                 parentName: episodeName,
                 full: episodeName ? `${episodeName} · ${s.displayName}` : s.displayName,
+                startTime: s.startTime || null,
+                endTime: s.endTime || null,
             };
         }
     }
     // Also register episodes themselves under their own uuid so an MMR record
     // that somehow references the episode directly still resolves.
     for (const [uuid, name] of Object.entries(episodes)) {
-        if (!map[uuid]) map[uuid] = { name, parentName: '', full: name };
+        if (!map[uuid]) map[uuid] = { name, parentName: '', full: name, startTime: null, endTime: null };
     }
 
     contentCache.seasons = map;
@@ -1087,6 +1089,41 @@ async function getMatchInfo({ accessToken, entitlementsToken, region, puuid }, o
     return result;
 }
 
+// Build the player's last-N act history from MMR seasonal data. Each entry
+// is the rank the player ENDED that act in (Rank / CompetitiveTier fields).
+// Uses the startTime from the seasons metadata to sort acts chronologically.
+// Skips acts where the player never played a competitive game (no WinsByTier
+// entries and NumberOfGames == 0). Returns newest-first.
+function buildActHistory(mmrData, seasons, ranks, limit = 3) {
+    const seasonal = mmrData?.QueueSkills?.competitive?.SeasonalInfoBySeasonID || {};
+    const entries = [];
+    for (const [seasonId, season] of Object.entries(seasonal)) {
+        const meta = seasons[seasonId];
+        if (!meta || !meta.startTime) continue; // skip episodes / unknown UUIDs
+        const games = season?.NumberOfGames || 0;
+        const winsByTier = season?.WinsByTier || {};
+        const hadActivity = games > 0 || Object.keys(winsByTier).length > 0;
+        if (!hadActivity) continue;
+        // Rank = ending rank for past seasons, CompetitiveTier = current tier
+        // for the active season. Prefer Rank, fall back to CompetitiveTier.
+        const tier = season.Rank || season.CompetitiveTier || 0;
+        const rr = season.RankedRating || 0;
+        const rankMeta = ranks[tier];
+        entries.push({
+            seasonId,
+            act: meta.full || meta.name,
+            startTime: meta.startTime,
+            tier,
+            name: rankMeta?.name || 'Unranked',
+            icon: rankMeta?.icon || null,
+            rr,
+            games,
+        });
+    }
+    entries.sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
+    return entries.slice(0, limit);
+}
+
 // Compute the ALL-TIME peak tier from the MMR response's seasonal data AND
 // identify which season (act) that peak was reached in. Returns { tier, seasonId }.
 // `QueueSkills.competitive.SeasonalInfoBySeasonID[season].WinsByTier` stores
@@ -1254,7 +1291,7 @@ async function getPlayerStats(ctx, targetPuuid) {
     const headers = await authHeaders(ctx.accessToken, ctx.entitlementsToken);
 
     // 1. MMR current + all-time peak (parallelized MMR + competitiveupdates).
-    let current = null, peak = null;
+    let current = null, peak = null, actHistory = [];
     try {
         const mmrUrl = `${pdUrl(ctx.region)}/mmr/v1/players/${targetPuuid}`;
         const [res, recentPeak] = await Promise.all([
@@ -1280,7 +1317,11 @@ async function getPlayerStats(ctx, targetPuuid) {
             const peakAct = peakSeasonId ? seasons[peakSeasonId]?.full : null;
             current = ranks[curTier] ? { tier: curTier, name: ranks[curTier].name, icon: ranks[curTier].icon, rr: curRR, act: curAct } : null;
             peak = ranks[peakTier] ? { tier: peakTier, name: ranks[peakTier].name, icon: ranks[peakTier].icon, rr: peakRR, act: peakAct } : null;
-            logCall('stats.mmr', 'GET', mmrUrl, res.status, `cur=${curTier}/${curRR}/${curAct || '?'} peak=${peakTier}/${peakRR}/${peakAct || '?'}`);
+            // Last 3 acts the player actually played — useful for judging
+            // consistency better than peak alone (a Diamond who spent 3 acts
+            // at Plat is read differently than one who hit Diamond each act).
+            actHistory = buildActHistory(data, seasons, ranks, 3);
+            logCall('stats.mmr', 'GET', mmrUrl, res.status, `cur=${curTier}/${curRR}/${curAct || '?'} peak=${peakTier}/${peakRR}/${peakAct || '?'} acts=${actHistory.length}`);
         }
     } catch (e) { console.warn(`[game] stats.mmr error: ${e.message}`); }
 
@@ -1370,6 +1411,7 @@ async function getPlayerStats(ctx, targetPuuid) {
         puuid: targetPuuid,
         current,
         peak,
+        actHistory,
         recent: {
             wins, losses,
             kd: Math.round(kd * 100) / 100,
