@@ -59,8 +59,8 @@ function SkinCard({ item, subtitle, onToggleWishlist, wishlisted }) {
         </button>
       )}
       <div className="p-2.5 flex flex-col gap-0.5">
-        <p className="text-xs font-medium leading-tight line-clamp-2" title={item.name}>{item.name}</p>
-        <p className="text-[11px] text-muted-foreground">{subtitle}</p>
+        <p className="text-xs font-semibold leading-tight line-clamp-2 text-foreground" title={item.name}>{item.name}</p>
+        <p className="text-[11px] font-medium text-purple-400">{subtitle}</p>
       </div>
     </div>
   )
@@ -109,17 +109,17 @@ function BundleSection({ bundle, wishlist, onToggleWishlist }) {
           {bundle.name || 'Featured Bundle'}
         </h3>
         <span className="text-xs text-muted-foreground flex items-center gap-1">
-          <Clock className="h-3 w-3" /> {formatRemaining(bundle.remainingSeconds)}
+          <Clock className="h-3 w-3 text-purple-400/60" /> {formatRemaining(bundle.remainingSeconds)}
         </span>
       </div>
       {bundle.icon && (
         <div className="relative rounded-md overflow-hidden border">
           <img src={bundle.icon} alt={bundle.name} className="w-full h-auto object-cover" />
-          <div className="absolute bottom-2 right-2 bg-black/70 backdrop-blur px-2 py-1 rounded text-xs">
-            <span className="line-through text-muted-foreground mr-1">{bundle.totalPrice.toLocaleString()}</span>
-            <span className="font-semibold text-white">{bundle.discountedTotal.toLocaleString()} VP</span>
+          <div className="absolute bottom-2 right-2 bg-black/70 backdrop-blur px-2.5 py-1.5 rounded text-xs">
+            <span className="line-through text-muted-foreground/70 mr-1.5">{bundle.totalPrice.toLocaleString()}</span>
+            <span className="font-bold text-white">{bundle.discountedTotal.toLocaleString()} VP</span>
             {bundle.discountPct > 0 && (
-              <span className="ml-1.5 text-green-400">-{bundle.discountPct}%</span>
+              <span className="ml-1.5 font-bold text-green-400">-{bundle.discountPct}%</span>
             )}
           </div>
         </div>
@@ -129,11 +129,7 @@ function BundleSection({ bundle, wishlist, onToggleWishlist }) {
           <SkinCard
             key={item.uuid}
             item={item}
-            subtitle={
-              item.basePrice !== item.discountedPrice
-                ? `${item.discountedPrice.toLocaleString()} VP`
-                : `${item.basePrice.toLocaleString()} VP`
-            }
+            subtitle={`${item.basePrice.toLocaleString()} VP`}
             wishlisted={!!wishlist[item.uuid]}
             onToggleWishlist={onToggleWishlist}
           />
@@ -242,11 +238,11 @@ export function StoreTab({ accounts }) {
           <section className="space-y-2">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold flex items-center gap-1.5">
-                <Store className="h-3.5 w-3.5 text-muted-foreground" />
+                <Store className="h-3.5 w-3.5 text-purple-400" />
                 Daily Offers
               </h3>
               <span className="text-xs text-muted-foreground flex items-center gap-1">
-                <Clock className="h-3 w-3" /> {formatRemaining(store.daily?.remainingSeconds)}
+                <Clock className="h-3 w-3 text-purple-400/60" /> {formatRemaining(store.daily?.remainingSeconds)}
               </span>
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -281,7 +277,7 @@ export function StoreTab({ accounts }) {
                   Nightmarket
                 </h3>
                 <span className="text-xs text-muted-foreground flex items-center gap-1">
-                  <Clock className="h-3 w-3" /> {formatRemaining(store.nightmarket.remainingSeconds)}
+                  <Clock className="h-3 w-3 text-purple-400/60" /> {formatRemaining(store.nightmarket.remainingSeconds)}
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-2">
@@ -289,7 +285,13 @@ export function StoreTab({ accounts }) {
                   <SkinCard
                     key={item.uuid}
                     item={item}
-                    subtitle={`${item.discountedPrice.toLocaleString()} VP  ·  ${item.discountPercent}% off`}
+                    subtitle={
+                      <span>
+                        <span className="line-through text-muted-foreground/40 mr-1">{item.basePrice?.toLocaleString()}</span>
+                        {item.discountedPrice.toLocaleString()} VP
+                        <span className="text-green-400 font-semibold ml-1.5">-{item.discountPercent}%</span>
+                      </span>
+                    }
                     wishlisted={!!wishlist[item.uuid]}
                     onToggleWishlist={handleToggleWishlist}
                   />
@@ -299,14 +301,13 @@ export function StoreTab({ accounts }) {
           ) : (
             <section className="space-y-2">
               <div className="flex items-center gap-1.5">
-                <Moon className="h-3.5 w-3.5 text-muted-foreground" />
-                <h3 className="text-sm font-semibold">Nightmarket</h3>
+                <Moon className="h-3.5 w-3.5 text-muted-foreground/40" />
+                <h3 className="text-sm font-semibold text-muted-foreground">Nightmarket</h3>
               </div>
-              <div className="rounded-md border border-dashed bg-secondary/30 p-4 text-center space-y-1">
-                <p className="text-sm font-medium">Nightmarket not available</p>
-                <p className="text-xs text-muted-foreground">
+              <div className="rounded-md border border-dashed bg-secondary/20 p-4 text-center space-y-1">
+                <p className="text-sm text-muted-foreground">Not available right now</p>
+                <p className="text-xs text-muted-foreground/60">
                   Riot runs it for ~2 weeks roughly once per act.
-                  There's no public schedule — check back after the next patch.
                 </p>
               </div>
             </section>
