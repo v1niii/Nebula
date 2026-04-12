@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { User, Trophy, TrendingUp, Swords, Ban, CheckCircle2, History } from 'lucide-react'
+import { User, Trophy, TrendingUp, Swords, Ban, CheckCircle2, History, Sparkles } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
@@ -120,6 +120,29 @@ export function PlayerStatsDialog({ open, onOpenChange, player, viewerAccountId,
     return { agentsPlayed: Array.from(seen.values()), agentCounts: counts }
   }, [stats])
 
+  // Smurf detection — graded confidence using level + peak rank tier + K/D
+  // over the recent competitive matches we just loaded. Uses the PEAK tier
+  // because a smurf's CURRENT rank is often deflated mid-climb. K/D is the
+  // tiebreaker that distinguishes "old account climbing back" from "actual
+  // smurf carrying every game". Without K/D, the inline match-info badge
+  // is a level+rank-only heuristic; this dialog refines it.
+  //   - LIKELY:   level < 30 + peak >= Diamond 1 + K/D >= 1.5
+  //   - POSSIBLE: level < 40 + peak >= Diamond 1 + K/D >= 1.2
+  //   - none:     fails any of the three
+  const smurfState = useMemo(() => {
+    const level = player?.accountLevel || 0
+    const peakTier = stats?.peak?.tier || 0
+    const kd = stats?.recent?.kd ?? aggregate?.kd ?? 0
+    if (level <= 0 || peakTier < 17) return null // need level + diamond+ peak
+    if (level < 30 && kd >= 1.5) {
+      return { confidence: 'likely', level, kd, peakName: stats.peak.name }
+    }
+    if (level < 40 && kd >= 1.2) {
+      return { confidence: 'possible', level, kd, peakName: stats.peak.name }
+    }
+    return null
+  }, [player, stats, aggregate])
+
   const handleConfirmBlacklist = async () => {
     try {
       await window.electronAPI.addToBlacklist({
@@ -159,10 +182,13 @@ export function PlayerStatsDialog({ open, onOpenChange, player, viewerAccountId,
 
         {stats && !loading && (
           <div className="space-y-4 pt-1">
-            {/* Rank cards: larger, with icons, RR, and act name */}
+            {/* Rank cards: larger, with icons, act name. Current shows RR;
+                Peak hides it because Riot only exposes ending RR per season,
+                not in-act peak RR — surfacing the ending value misled users
+                into thinking it was their actual peak. */}
             <div className="grid grid-cols-2 gap-2">
-              <RankCard label="Current" icon={Trophy} rank={stats.current} showAct />
-              <RankCard label="Peak" icon={TrendingUp} rank={stats.peak} showAct />
+              <RankCard label="Current" icon={Trophy} rank={stats.current} showAct showRR />
+              <RankCard label="Peak"    icon={TrendingUp} rank={stats.peak}    showAct />
             </div>
 
             {/* Last 3 acts — shows the rank this player ENDED each of the
@@ -178,6 +204,26 @@ export function PlayerStatsDialog({ open, onOpenChange, player, viewerAccountId,
                   {stats.actHistory.map((act) => (
                     <ActHistoryCell key={act.seasonId} act={act} />
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* Smurf banner — only shown when level + rank + K/D triple
+                heuristic fires. "Likely" is red, "possible" is amber. */}
+            {smurfState && (
+              <div className={`rounded-md border p-3 flex items-center gap-2.5 ${
+                smurfState.confidence === 'likely'
+                  ? 'border-red-500/50 bg-red-500/10'
+                  : 'border-amber-500/40 bg-amber-500/10'
+              }`}>
+                <Sparkles className={`h-4 w-4 shrink-0 ${smurfState.confidence === 'likely' ? 'text-red-400' : 'text-amber-400'}`} />
+                <div className="flex-1 min-w-0">
+                  <p className={`text-xs font-semibold ${smurfState.confidence === 'likely' ? 'text-red-400' : 'text-amber-400'}`}>
+                    {smurfState.confidence === 'likely' ? 'Likely smurf' : 'Possible smurf'}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    Lv {smurfState.level} · peak {smurfState.peakName} · K/D {smurfState.kd}
+                  </p>
                 </div>
               </div>
             )}
@@ -323,7 +369,7 @@ export function PlayerStatsDialog({ open, onOpenChange, player, viewerAccountId,
   )
 }
 
-function RankCard({ label, icon: Icon, rank, showAct = false }) {
+function RankCard({ label, icon: Icon, rank, showAct = false, showRR = false }) {
   return (
     <div className="rounded-md border bg-card p-3">
       <div className="flex items-center gap-1.5 mb-1.5">
@@ -335,7 +381,7 @@ function RankCard({ label, icon: Icon, rank, showAct = false }) {
           {rank.icon && <img src={rank.icon} alt={rank.name} className="h-10 w-10 shrink-0" />}
           <div className="min-w-0 flex-1">
             <p className="text-sm font-bold truncate leading-tight text-foreground">{rank.name}</p>
-            {rank.rr != null && (
+            {showRR && rank.rr != null && (
               <span className="inline-block text-[10px] font-semibold text-purple-400 bg-purple-500/10 border border-purple-500/30 rounded px-1.5 py-0.5 leading-none mt-1">
                 {rank.rr} RR
               </span>

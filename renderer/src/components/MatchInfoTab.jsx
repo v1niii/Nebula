@@ -122,10 +122,13 @@ function PlayerRow({ p, blacklisted, onClick, onCopy }) {
           {p.isIncognito && <EyeOff className="h-3 w-3 text-muted-foreground shrink-0" title="Incognito" />}
           {p.locked && <CircleCheck className="h-3 w-3 text-green-500 shrink-0" title="Locked in" />}
           {p.isSmurf && (
-            <Sparkles
-              className="h-3 w-3 text-amber-400 shrink-0"
-              title={`Possible smurf — level ${p.accountLevel} at ${p.rank?.name || 'high rank'}`}
-            />
+            <span
+              className="inline-flex items-center gap-0.5 shrink-0 px-1 py-0.5 rounded bg-amber-500/15 border border-amber-500/40 text-[9px] font-bold text-amber-400 uppercase tracking-wider leading-none"
+              title={`Possible smurf — Lv ${p.accountLevel} at ${p.rank?.name || 'high rank'}. Open Player Stats for K/D-confirmed detection.`}
+            >
+              <Sparkles className="h-2.5 w-2.5" />
+              SMURF
+            </span>
           )}
         </div>
         <p className="text-xs text-muted-foreground truncate">
