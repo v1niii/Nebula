@@ -686,8 +686,32 @@ ipcMain.handle('get-skin-catalog', async (event, accountId) => {
 // Stored via electron-store as { [skinLevelUuid]: { name, addedAt } }.
 // The renderer checks daily store items against this on fetch and shows a
 // badge when a wishlisted item appears in any account's store.
-ipcMain.handle('get-wishlist', () => {
-    return { success: true, wishlist: appStore.get('storeWishlist', {}) };
+ipcMain.handle('get-wishlist', async () => {
+    const stored = appStore.get('storeWishlist', {});
+    // Auto-prune entries that aren't in the current browseable catalog —
+    // these are orphans from older versions when the catalog had different
+    // filtering (e.g. VCT skins were once buyable, now excluded). Without
+    // this prune they show up in the wishlist count but are invisible in
+    // the UI, so the user sees "1 item" but can't find/remove it.
+    try {
+        const catalog = await gameService.ensureSkinCatalog();
+        const validUuids = new Set(catalog.map(s => s.uuid));
+        const cleaned = {};
+        let removed = 0;
+        for (const [uuid, entry] of Object.entries(stored)) {
+            if (validUuids.has(uuid)) cleaned[uuid] = entry;
+            else removed++;
+        }
+        if (removed > 0) {
+            appStore.set('storeWishlist', cleaned);
+            console.log(`[main] wishlist auto-prune: removed ${removed} orphaned entries`);
+        }
+        return { success: true, wishlist: cleaned };
+    } catch {
+        // Catalog fetch failed — return the stored wishlist as-is rather
+        // than risk showing nothing.
+        return { success: true, wishlist: stored };
+    }
 });
 
 ipcMain.handle('add-to-wishlist', (event, { uuid, name }) => {

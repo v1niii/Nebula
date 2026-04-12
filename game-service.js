@@ -234,6 +234,7 @@ let _skinCatalog = null;
 const NON_BUYABLE_NAME_PATTERNS = [
     /^standard /i,
     /^random favorite/i,
+    /^melee$/i,                          // default melee weapon — every player owns it, not a skin
     /vct/i,                              // VCT25 x Team Classics, VCT Champions, VCT Capsule, etc.
     /champions? \d{4}/i,                 // "Champions 2021", "Champion 2022"
     /masters /i,                         // "Masters Tokyo", "Masters Madrid"
@@ -250,11 +251,58 @@ function isLikelyBuyable(skinName) {
     return true;
 }
 
+// Set of skin level UUIDs that come from a battlepass contract. Built once
+// per session by walking valorant-api's `/v1/contracts` endpoint and
+// identifying contracts that look like battlepasses.
+//
+// Discriminator: any contract whose chapters reward >= 5 skin levels in
+// total. Battlepasses contain ~12-13 skins; the alternative "agent gear"
+// contracts each contain exactly 1 (the signature melee). Name patterns
+// vary across years ("IGNITION : ACT 1", "Season 2026 // Act II", etc.)
+// so the count threshold is more reliable than name matching.
+let _battlepassSkinIds = null;
+async function ensureBattlepassSkinIds() {
+    if (_battlepassSkinIds) return _battlepassSkinIds;
+    const ids = new Set();
+    try {
+        const res = await fetch('https://valorant-api.com/v1/contracts');
+        const body = await res.json();
+        for (const contract of body.data || []) {
+            const skinUuids = [];
+            for (const ch of contract?.content?.chapters || []) {
+                for (const lvl of ch.levels || []) {
+                    if (lvl.reward?.type === 'EquippableSkinLevel' && lvl.reward.uuid) {
+                        skinUuids.push(lvl.reward.uuid);
+                    }
+                }
+                for (const fr of ch.freeRewards || []) {
+                    if (fr.type === 'EquippableSkinLevel' && fr.uuid) {
+                        skinUuids.push(fr.uuid);
+                    }
+                }
+            }
+            // 5+ skin rewards = battlepass; 1 = agent gear contract
+            if (skinUuids.length >= 5) {
+                for (const id of skinUuids) ids.add(id);
+            }
+        }
+        console.log(`[game] battlepass exclusion set: ${ids.size} skin level UUIDs`);
+    } catch (e) {
+        console.warn(`[game] contracts fetch failed: ${e.message}`);
+    }
+    _battlepassSkinIds = ids;
+    return ids;
+}
+
 async function ensureSkinCatalog() {
     if (_skinCatalog) return _skinCatalog;
-    const res = await fetch('https://valorant-api.com/v1/weapons');
-    const body = await res.json();
+    const [weaponsRes, battlepassIds] = await Promise.all([
+        fetch('https://valorant-api.com/v1/weapons'),
+        ensureBattlepassSkinIds(),
+    ]);
+    const body = await weaponsRes.json();
     const list = [];
+    let bpFiltered = 0;
     for (const weapon of body.data || []) {
         const weaponName = weapon.displayName;
         const weaponCategory = weapon.shopData?.category || weapon.category || 'Other';
@@ -264,15 +312,31 @@ async function ensureSkinCatalog() {
             const levelOne = skin.levels?.[0];
             if (!levelOne?.uuid) continue;
             if (!isLikelyBuyable(skin.displayName)) continue;
-            // Image fallback chain: skin.displayIcon → first level displayIcon
-            // → first chroma fullRender → first chroma displayIcon → null.
-            // Some newer/older skins are missing one or two of these.
-            const icon =
-                skin.displayIcon ||
-                levelOne.displayIcon ||
-                skin.chromas?.[0]?.fullRender ||
-                skin.chromas?.[0]?.displayIcon ||
-                null;
+            // Cross-reference with battlepass contract rewards — these can't
+            // be bought from the store and shouldn't appear in the wishlist
+            // browser. Some battlepass skins eventually rotate into the
+            // store via "Borealis" / re-release bundles, but the vast
+            // majority don't, so excluding by default is the right call.
+            if (battlepassIds.has(levelOne.uuid)) { bpFiltered++; continue; }
+            // Image fallback chain: skin.displayIcon → every level's
+            // displayIcon → every chroma's fullRender → every chroma's
+            // displayIcon → null. Walks ALL levels and chromas (not just
+            // the first) because some skins have a missing icon on the
+            // first variant but a working one on a later chroma.
+            let icon = skin.displayIcon || null;
+            if (!icon) {
+                for (const lvl of skin.levels || []) { if (lvl.displayIcon) { icon = lvl.displayIcon; break; } }
+            }
+            if (!icon) {
+                for (const ch of skin.chromas || []) { if (ch.fullRender) { icon = ch.fullRender; break; } }
+            }
+            if (!icon) {
+                for (const ch of skin.chromas || []) { if (ch.displayIcon) { icon = ch.displayIcon; break; } }
+            }
+            // Skip skins with no usable image at all — they'd just render
+            // as broken/placeholder rows in the browser, which is what the
+            // user reported.
+            if (!icon) continue;
             list.push({
                 uuid: levelOne.uuid,
                 name: skin.displayName,
@@ -283,6 +347,7 @@ async function ensureSkinCatalog() {
         }
     }
     list.sort((a, b) => a.weapon.localeCompare(b.weapon) || a.name.localeCompare(b.name));
+    console.log(`[game] skin catalog built: ${list.length} buyable skins (${bpFiltered} battlepass excluded)`);
     _skinCatalog = list;
     return list;
 }

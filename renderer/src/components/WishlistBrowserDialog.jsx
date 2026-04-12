@@ -1,19 +1,20 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { Search, X, Heart, Store, Package } from 'lucide-react'
+import { Search, X, Heart, ImageOff } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useToast } from '@/components/ui/toast'
 
 // Fallback image component — shows the real icon if it loads, or a muted
-// package silhouette if the URL is missing or 404s. Used for the ~5% of
-// skins that don't have a displayIcon field in valorant-api.com's catalog.
+// "image off" silhouette if the URL is missing or 404s. Earlier used the
+// Package icon which at small sizes looked like a delete X to users; the
+// ImageOff icon is unambiguous.
 function SkinThumb({ src, alt }) {
   const [failed, setFailed] = useState(false)
   useEffect(() => { setFailed(false) }, [src])
   if (!src || failed) {
     return (
       <div className="h-8 w-16 rounded bg-secondary/60 flex items-center justify-center shrink-0">
-        <Package className="h-3.5 w-3.5 text-muted-foreground/60" />
+        <ImageOff className="h-3.5 w-3.5 text-muted-foreground/40" />
       </div>
     )
   }
