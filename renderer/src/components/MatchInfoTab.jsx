@@ -210,9 +210,25 @@ export function MatchInfoTab({ accounts }) {
   // observed ~30 req/min soft rate limit (match-info uses ~3-4 calls per
   // refresh → ~16 req/min at 15s). The fetchInProgress ref prevents
   // overlapping fetches when a refresh takes longer than the interval.
+  // The preference is persisted in user settings so the user doesn't have to
+  // re-enable it every time they open match info.
   const AUTO_REFRESH_MS = 15_000
   const [autoRefresh, setAutoRefresh] = useState(false)
   const fetchInProgress = useRef(false)
+
+  // Load saved auto-refresh preference on mount
+  useEffect(() => {
+    window.electronAPI.getSettings().then(s => {
+      if (s.matchInfoAutoRefresh) setAutoRefresh(true)
+    })
+  }, [])
+
+  // Persist auto-refresh preference whenever it changes
+  const toggleAutoRefresh = useCallback((value) => {
+    const next = typeof value === 'function' ? value(autoRefresh) : value
+    setAutoRefresh(next)
+    window.electronAPI.saveSettings({ matchInfoAutoRefresh: next })
+  }, [autoRefresh])
 
   const fetchMatch = useCallback(async (silent = false) => {
     if (!selectedId) return
@@ -289,7 +305,7 @@ export function MatchInfoTab({ accounts }) {
         <Button
           variant="outline"
           size="icon"
-          onClick={() => setAutoRefresh(v => !v)}
+          onClick={() => toggleAutoRefresh(v => !v)}
           disabled={!selectedId}
           title={autoRefresh ? 'Auto-refresh ON (15s) — click to stop' : 'Auto-refresh OFF — click to start'}
           className={autoRefresh ? 'border-purple-500/50 bg-purple-500/10 text-purple-400' : ''}

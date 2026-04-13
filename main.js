@@ -471,6 +471,7 @@ ipcMain.handle('get-settings', async () => {
         // Optional Henrikdev API key for the community-cache name fallback.
         // Empty string = not configured = skip that fallback entirely.
         henrikdevApiKey: appStore.get('henrikdevApiKey', ''),
+        matchInfoAutoRefresh: appStore.get('matchInfoAutoRefresh', false),
     };
 });
 
@@ -490,6 +491,9 @@ ipcMain.handle('save-settings', async (event, settings) => {
     }
     if (typeof settings.henrikdevApiKey === 'string') {
         appStore.set('henrikdevApiKey', settings.henrikdevApiKey.trim());
+    }
+    if (typeof settings.matchInfoAutoRefresh === 'boolean') {
+        appStore.set('matchInfoAutoRefresh', settings.matchInfoAutoRefresh);
     }
     return { success: true };
 });

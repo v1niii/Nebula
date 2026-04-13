@@ -188,7 +188,7 @@ export function PlayerStatsDialog({ open, onOpenChange, player, viewerAccountId,
                 into thinking it was their actual peak. */}
             <div className="grid grid-cols-2 gap-2">
               <RankCard label="Current" icon={Trophy} rank={stats.current} showAct showRR />
-              <RankCard label="Peak"    icon={TrendingUp} rank={stats.peak}    showAct />
+              <RankCard label="Peak"    icon={TrendingUp} rank={stats.peak} />
             </div>
 
             {/* Last 3 acts — shows the rank this player ENDED each of the
