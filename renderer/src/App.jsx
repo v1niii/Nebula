@@ -22,6 +22,7 @@ function AppContent() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [activeTab, setActiveTab] = useState('accounts')
   const [features, setFeatures] = useState({ store: false, matchInfo: false })
+  const [autoRefresh, setAutoRefresh] = useState(false)
   const [accountRanks, setAccountRanks] = useState({}) // accountId → { current, peak }
   const [accountSessions, setAccountSessions] = useState({}) // accountId → today's stats
   const [copyTarget, setCopyTarget] = useState(null)
@@ -34,6 +35,7 @@ function AppContent() {
   const refreshFeatures = useCallback(async () => {
     const s = await window.electronAPI.getSettings()
     setFeatures({ store: !!s.enableStoreFeature, matchInfo: !!s.enableMatchInfoFeature })
+    setAutoRefresh(!!s.matchInfoAutoRefresh)
     return s
   }, [])
 
@@ -143,6 +145,26 @@ function AppContent() {
     return () => { cancelled = true }
   }, [accounts]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Lightweight rank-only refresh for the running account. Only the
+  // account actively in-game can have its rank/RR change, so polling
+  // the others is wasted API budget. ~2 API calls per interval.
+  const refreshAccountRanks = useCallback(async () => {
+    const running = accounts.find(acc => statuses[acc.id]?.status === 'running')
+    if (!running) return
+    try {
+      const r = await window.electronAPI.getAccountRank(running.id)
+      if (r.success && r.rank) setAccountRanks(prev => ({ ...prev, [running.id]: r.rank }))
+    } catch { /* silent */ }
+  }, [accounts, statuses])
+
+  // When auto-refresh is enabled and the user is viewing the accounts tab,
+  // silently refresh rank / RR / session stats every 15s.
+  useEffect(() => {
+    if (!autoRefresh || activeTab !== 'accounts') return
+    const id = setInterval(refreshAccountRanks, 15_000)
+    return () => clearInterval(id)
+  }, [autoRefresh, activeTab, refreshAccountRanks])
+
   return (
     <div className="h-screen overflow-hidden p-4 flex flex-col">
       <div className="w-full flex flex-col flex-1 min-h-0 animate-fade-in">
@@ -177,7 +199,7 @@ function AppContent() {
             </>
           )}
           {activeTab === 'store' && features.store && <StoreTab accounts={accounts} />}
-          {activeTab === 'match' && features.matchInfo && <MatchInfoTab accounts={accounts} />}
+          {activeTab === 'match' && features.matchInfo && <MatchInfoTab accounts={accounts} autoRefresh={autoRefresh} statuses={statuses} />}
         </div>
 
         <Footer status={appStatus} />

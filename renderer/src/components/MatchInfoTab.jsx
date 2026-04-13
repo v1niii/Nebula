@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Swords, RefreshCw, Shield, Crosshair, EyeOff, Circle, CircleCheck, Copy, AlertTriangle, Ban, Sparkles, Timer } from 'lucide-react'
+import { Swords, RefreshCw, Shield, Crosshair, EyeOff, Circle, CircleCheck, Copy, AlertTriangle, Ban, Sparkles } from 'lucide-react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -182,7 +182,7 @@ function TeamPanel({ title, players, accent, icon: Icon, blacklist, onPlayerClic
 }
 
 
-export function MatchInfoTab({ accounts }) {
+export function MatchInfoTab({ accounts, autoRefresh, statuses = {} }) {
   const [selectedId, setSelectedId] = useState('')
   const [loading, setLoading] = useState(false)
   const [match, setMatch] = useState(null)
@@ -191,9 +191,13 @@ export function MatchInfoTab({ accounts }) {
   const [blacklistOpen, setBlacklistOpen] = useState(false)
   const toast = useToast()
 
+  // Pre-select the running account if available, otherwise fall back to first
   useEffect(() => {
-    if (!selectedId && accounts.length) setSelectedId(accounts[0].id)
-  }, [accounts, selectedId])
+    if (!selectedId && accounts.length) {
+      const running = accounts.find(a => statuses[a.id]?.status === 'running')
+      setSelectedId(running ? running.id : accounts[0].id)
+    }
+  }, [accounts, selectedId, statuses])
 
   // Load blacklist once on mount; refresh when a player is (un)blacklisted
   // via the stats dialog by passing the setter down.
@@ -205,30 +209,8 @@ export function MatchInfoTab({ accounts }) {
   }, [])
   useEffect(() => { reloadBlacklist() }, [reloadBlacklist])
 
-  // Auto-refresh state. 15s interval is the sweet spot: fast enough to catch
-  // agent locks and phase changes, slow enough to stay well under Riot's
-  // observed ~30 req/min soft rate limit (match-info uses ~3-4 calls per
-  // refresh → ~16 req/min at 15s). The fetchInProgress ref prevents
-  // overlapping fetches when a refresh takes longer than the interval.
-  // The preference is persisted in user settings so the user doesn't have to
-  // re-enable it every time they open match info.
   const AUTO_REFRESH_MS = 15_000
-  const [autoRefresh, setAutoRefresh] = useState(false)
   const fetchInProgress = useRef(false)
-
-  // Load saved auto-refresh preference on mount
-  useEffect(() => {
-    window.electronAPI.getSettings().then(s => {
-      if (s.matchInfoAutoRefresh) setAutoRefresh(true)
-    })
-  }, [])
-
-  // Persist auto-refresh preference whenever it changes
-  const toggleAutoRefresh = useCallback((value) => {
-    const next = typeof value === 'function' ? value(autoRefresh) : value
-    setAutoRefresh(next)
-    window.electronAPI.saveSettings({ matchInfoAutoRefresh: next })
-  }, [autoRefresh])
 
   const fetchMatch = useCallback(async (silent = false) => {
     if (!selectedId) return
@@ -301,16 +283,6 @@ export function MatchInfoTab({ accounts }) {
         </Select>
         <Button variant="outline" size="icon" onClick={() => setBlacklistOpen(true)} title="Manage blacklist">
           <Ban className="h-4 w-4" />
-        </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          onClick={() => toggleAutoRefresh(v => !v)}
-          disabled={!selectedId}
-          title={autoRefresh ? 'Auto-refresh ON (15s) — click to stop' : 'Auto-refresh OFF — click to start'}
-          className={autoRefresh ? 'border-purple-500/50 bg-purple-500/10 text-purple-400' : ''}
-        >
-          <Timer className="h-4 w-4" />
         </Button>
         <Button variant="outline" size="icon" onClick={() => fetchMatch(false)} disabled={loading || !selectedId} title="Refresh">
           <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />

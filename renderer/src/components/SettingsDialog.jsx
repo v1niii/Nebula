@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { CheckCircle2, XCircle, Settings2, FolderCog, Palette, Rocket, Sun, Moon, Monitor, Save, Store, Swords, Key } from 'lucide-react'
+import { CheckCircle2, XCircle, Settings2, FolderCog, Palette, Rocket, Sun, Moon, Monitor, Save, Store, Swords, Key, Timer } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -16,6 +16,7 @@ export function SettingsDialog({ open, onOpenChange, onSaved }) {
   const [enableStore, setEnableStore] = useState(false)
   const [enableMatchInfo, setEnableMatchInfo] = useState(false)
   const [henrikdevApiKey, setHenrikdevApiKey] = useState('')
+  const [autoRefreshOn, setAutoRefreshOn] = useState(false)
   const [saving, setSaving] = useState(false)
   const toast = useToast()
 
@@ -28,6 +29,7 @@ export function SettingsDialog({ open, onOpenChange, onSaved }) {
         setEnableStore(!!s.enableStoreFeature)
         setEnableMatchInfo(!!s.enableMatchInfoFeature)
         setHenrikdevApiKey(s.henrikdevApiKey || '')
+        setAutoRefreshOn(!!s.matchInfoAutoRefresh)
       })
     }
   }, [open])
@@ -40,6 +42,7 @@ export function SettingsDialog({ open, onOpenChange, onSaved }) {
       enableStoreFeature: enableStore,
       enableMatchInfoFeature: enableMatchInfo,
       henrikdevApiKey,
+      matchInfoAutoRefresh: autoRefreshOn,
     })
     setSaving(false)
     if (result.success) {
@@ -146,32 +149,46 @@ export function SettingsDialog({ open, onOpenChange, onSaved }) {
             </div>
 
             {enableMatchInfo && (
-              <div className="space-y-1.5 pl-5">
-                <label className="text-xs font-medium flex items-center gap-1.5">
-                  <Key className="h-3 w-3 text-muted-foreground" />
-                  Henrikdev API key <span className="text-muted-foreground font-normal">(optional)</span>
-                </label>
-                <input
-                  type="password"
-                  value={henrikdevApiKey}
-                  onChange={(e) => setHenrikdevApiKey(e.target.value)}
-                  placeholder="HDEV-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                  className="w-full h-8 px-2.5 rounded-md border bg-secondary/50 text-xs font-mono focus:outline-none focus:border-purple-500/50 transition-colors"
-                  spellCheck={false}
-                  autoComplete="off"
-                />
-                <p className="text-[11px] text-muted-foreground leading-relaxed">
-                  Last-resort fallback for hidden names via api.henrikdev.xyz community cache.
-                  Free key at{' '}
-                  <button
-                    type="button"
-                    onClick={() => window.electronAPI.openExternalLink('https://docs.henrikdev.xyz/')}
-                    className="text-purple-500 hover:underline"
-                  >
-                    docs.henrikdev.xyz
-                  </button>
-                  . Leave blank to skip.
-                </p>
+              <div className="space-y-3 pl-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-start gap-2 flex-1">
+                    <Timer className="h-3 w-3 text-muted-foreground mt-0.5 shrink-0" />
+                    <div>
+                      <label className="text-xs font-medium">Auto-Refresh (15s)</label>
+                      <p className="text-[11px] text-muted-foreground">Automatically refresh Match Info and account ranks/RR.</p>
+                    </div>
+                  </div>
+                  <Switch checked={autoRefreshOn} onCheckedChange={setAutoRefreshOn} />
+                </div>
+                <div className="flex items-start gap-2">
+                  <Key className="h-3 w-3 text-muted-foreground mt-0.5 shrink-0" />
+                  <div className="flex-1 space-y-1.5">
+                    <label className="text-xs font-medium">
+                      Henrikdev API key <span className="text-muted-foreground font-normal">(optional)</span>
+                    </label>
+                    <input
+                      type="password"
+                      value={henrikdevApiKey}
+                      onChange={(e) => setHenrikdevApiKey(e.target.value)}
+                      placeholder="HDEV-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                      className="w-full h-8 px-2.5 rounded-md border bg-secondary/50 text-xs font-mono focus:outline-none focus:border-purple-500/50 transition-colors"
+                      spellCheck={false}
+                      autoComplete="off"
+                    />
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Last-resort fallback for hidden names via api.henrikdev.xyz community cache.
+                      Free key at{' '}
+                      <button
+                        type="button"
+                        onClick={() => window.electronAPI.openExternalLink('https://docs.henrikdev.xyz/')}
+                        className="text-purple-500 hover:underline"
+                      >
+                        docs.henrikdev.xyz
+                      </button>
+                      . Leave blank to skip.
+                    </p>
+                  </div>
+                </div>
               </div>
             )}
           </div>
