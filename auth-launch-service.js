@@ -168,6 +168,37 @@ class AuthLaunchService {
         return fetch(`https://127.0.0.1:${lockfile.port}${endpoint}`, opts);
     }
 
+    // Party detection via the local chat/presences endpoint.
+    //
+    // Match endpoints (pregame/coregame) strip party data from the payload, so
+    // the only way to group players by party is via the Riot client's local
+    // XMPP presence list. While the user is in pregame/in-match, this endpoint
+    // expands to include all 10 lobby players. Each entry has a base64-encoded
+    // `private` blob containing that player's `partyId`.
+    //
+    // Returns a plain object: { puuid: partyId }. Returns {} on any error — a
+    // missing party map should never break match-info rendering.
+    async fetchPartyMap() {
+        try {
+            const res = await this._localApi('GET', '/chat/v4/presences');
+            if (!res || !res.ok) return {};
+            const data = await res.json();
+            const presences = data?.presences || [];
+            const map = {};
+            for (const pr of presences) {
+                if (pr.product !== 'valorant' || !pr.puuid || !pr.private) continue;
+                try {
+                    const decoded = JSON.parse(Buffer.from(pr.private, 'base64').toString('utf-8'));
+                    const partyId = decoded?.partyId || decoded?.matchPresenceData?.partyId;
+                    if (partyId) map[pr.puuid] = partyId;
+                } catch { /* skip unparseable entry */ }
+            }
+            return map;
+        } catch {
+            return {};
+        }
+    }
+
     async getAuthenticatedAccount() {
         // Primary: entitlements endpoint (full token + PUUID in one call)
         try {

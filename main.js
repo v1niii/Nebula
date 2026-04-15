@@ -609,7 +609,8 @@ ipcMain.handle('get-match-info', async (event, accountId) => {
     try {
         const ctx = await resolveLiveAuthTokens(accountId);
         const henrikdevApiKey = appStore.get('henrikdevApiKey', '');
-        const info = await gameService.getMatchInfo(ctx, { henrikdevApiKey });
+        const partyMap = await authLaunchService.fetchPartyMap();
+        const info = await gameService.getMatchInfo(ctx, { henrikdevApiKey, partyMap });
         return { success: true, match: info };
     } catch (e) {
         return { success: false, error: e.message };
