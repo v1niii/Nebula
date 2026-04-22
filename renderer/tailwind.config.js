@@ -5,14 +5,6 @@ export default {
     './index.html',
     './src/**/*.{js,jsx}',
   ],
-  safelist: [
-    // Dynamic party-color border classes assigned from MatchInfoTab
-    'border-l-purple-500',
-    'border-l-cyan-500',
-    'border-l-orange-500',
-    'border-l-pink-500',
-    'border-l-yellow-500',
-  ],
   theme: {
     extend: {
       fontFamily: {

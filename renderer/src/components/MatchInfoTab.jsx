@@ -56,54 +56,15 @@ function findBlacklistEntry(blacklist, player) {
   return blacklist[player.puuid] || null
 }
 
-// Distinct from attack-red / defense-blue / ally-green so party stacks don't
-// visually collide with existing team/side accents.
-const PARTY_PALETTE = [
-  { bar: 'bg-fuchsia-500', ring: 'ring-fuchsia-500/40' },
-  { bar: 'bg-cyan-400',    ring: 'ring-cyan-400/40' },
-  { bar: 'bg-amber-400',   ring: 'ring-amber-400/40' },
-  { bar: 'bg-rose-400',    ring: 'ring-rose-400/40' },
-  { bar: 'bg-teal-400',    ring: 'ring-teal-400/40' },
-]
-
-// Build a partyId → color map covering only multi-player parties visible in
-// the current match (self + ally + enemy). Solo "parties of one" get no color
-// since highlighting them carries no information.
-function buildPartyColors(players) {
-  const counts = new Map()
-  const order = []
-  for (const p of players) {
-    if (!p?.partyId) continue
-    if (!counts.has(p.partyId)) { counts.set(p.partyId, 0); order.push(p.partyId) }
-    counts.set(p.partyId, counts.get(p.partyId) + 1)
-  }
-  const colors = {}
-  let i = 0
-  for (const pid of order) {
-    if (counts.get(pid) >= 2) {
-      colors[pid] = PARTY_PALETTE[i % PARTY_PALETTE.length]
-      i++
-    }
-  }
-  return colors
-}
-
 // User's own player card banner. Clickable — opens the same stats dialog
 // you'd see for any other player. No background splash art (user request).
-function SelfBanner({ self, onClick, partyColors }) {
-  const party = self.partyId ? partyColors?.[self.partyId] : null
+function SelfBanner({ self, onClick }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="relative w-full flex items-center gap-3 rounded-md border bg-card/60 p-3 text-left transition-colors duration-150 hover:border-purple-500/30 hover:bg-card overflow-hidden"
+      className="w-full flex items-center gap-3 rounded-md border bg-card/60 p-3 text-left transition-colors duration-150 hover:border-purple-500/30 hover:bg-card"
     >
-      {party && (
-        <span
-          className={`absolute left-0 top-0 bottom-0 w-1 ${party.bar}`}
-          title="In your party"
-        />
-      )}
       {self.agent?.icon ? (
         <img src={self.agent.icon} alt={self.agent.name} className="h-12 w-12 rounded shrink-0 border border-border" />
       ) : (
@@ -131,13 +92,12 @@ function SelfBanner({ self, onClick, partyColors }) {
   )
 }
 
-function PlayerRow({ p, blacklisted, onClick, onCopy, partyColors }) {
+function PlayerRow({ p, blacklisted, onClick, onCopy }) {
   const handleCopy = (e) => {
     e.stopPropagation()
     onCopy(p.name)
   }
-  const party = p.partyId ? partyColors?.[p.partyId] : null
-  const base = 'group relative w-full flex items-center gap-2.5 rounded-md border px-2.5 py-2 text-left transition-colors duration-150 overflow-hidden'
+  const base = 'group w-full flex items-center gap-2.5 rounded-md border px-2.5 py-2 text-left transition-colors duration-150'
   const skin = blacklisted
     ? 'border-red-500/50 bg-red-500/10 hover:bg-red-500/15'
     : 'bg-card/50 hover:border-purple-500/30 hover:bg-card'
@@ -146,10 +106,9 @@ function PlayerRow({ p, blacklisted, onClick, onCopy, partyColors }) {
       type="button"
       onClick={onClick}
       className={`${base} ${skin}`}
-      title={blacklisted ? `Blacklisted: ${blacklisted.reason || 'No reason'}` : (party ? 'In a party' : undefined)}
+      title={blacklisted ? `Blacklisted: ${blacklisted.reason || 'No reason'}` : undefined}
     >
-      {party && <span className={`absolute left-0 top-0 bottom-0 w-1 ${party.bar}`} />}
-      <div className="relative flex items-center gap-2.5 w-full">
+      <div className="flex items-center gap-2.5 w-full">
       {p.agent?.icon ? (
         <img src={p.agent.icon} alt={p.agent.name} className="h-8 w-8 rounded shrink-0" />
       ) : (
@@ -197,7 +156,7 @@ function PlayerRow({ p, blacklisted, onClick, onCopy, partyColors }) {
   )
 }
 
-function TeamPanel({ title, players, accent, icon: Icon, blacklist, onPlayerClick, onCopy, partyColors }) {
+function TeamPanel({ title, players, accent, icon: Icon, blacklist, onPlayerClick, onCopy }) {
   return (
     <div className="flex-1 min-w-0 space-y-2">
       <div className="flex items-center gap-1.5">
@@ -214,7 +173,6 @@ function TeamPanel({ title, players, accent, icon: Icon, blacklist, onPlayerClic
                 blacklisted={findBlacklistEntry(blacklist, p)}
                 onClick={() => onPlayerClick(p)}
                 onCopy={onCopy}
-                partyColors={partyColors}
               />
             ))
           : <p className="text-xs text-muted-foreground px-1">No players visible yet.</p>}
@@ -291,15 +249,6 @@ export function MatchInfoTab({ accounts, autoRefresh, statuses = {} }) {
     const all = [match.self, ...(match.ally || []), ...(match.enemy || [])].filter(Boolean)
     return all.map(p => ({ p, entry: findBlacklistEntry(blacklist, p) })).filter(x => x.entry)
   }, [match, blacklist])
-
-  // Party coloring: only highlight parties of 2+ players. A missing or sparse
-  // presence response (e.g. the Riot client hasn't joined the lobby MUC yet)
-  // produces an empty map, which silently falls back to no indicators.
-  const partyColors = useMemo(() => {
-    if (!match?.inMatch) return {}
-    const all = [match.self, ...(match.ally || []), ...(match.enemy || [])].filter(Boolean)
-    return buildPartyColors(all)
-  }, [match])
 
   // Warn whenever a fresh match load contains one or more blacklisted players.
   useEffect(() => {
@@ -396,7 +345,6 @@ export function MatchInfoTab({ accounts, autoRefresh, statuses = {} }) {
             <SelfBanner
               self={match.self}
               onClick={() => setSelectedPlayer(match.self)}
-              partyColors={partyColors}
             />
           )}
 
@@ -412,7 +360,6 @@ export function MatchInfoTab({ accounts, autoRefresh, statuses = {} }) {
               blacklist={blacklist}
               onPlayerClick={setSelectedPlayer}
               onCopy={handleCopyName}
-              partyColors={partyColors}
             />
           ) : (
             <>
@@ -424,7 +371,6 @@ export function MatchInfoTab({ accounts, autoRefresh, statuses = {} }) {
                 blacklist={blacklist}
                 onPlayerClick={setSelectedPlayer}
                 onCopy={handleCopyName}
-                partyColors={partyColors}
               />
               {match.phase === 'INGAME' && (
                 <TeamPanel
@@ -435,7 +381,6 @@ export function MatchInfoTab({ accounts, autoRefresh, statuses = {} }) {
                   blacklist={blacklist}
                   onPlayerClick={setSelectedPlayer}
                   onCopy={handleCopyName}
-                  partyColors={partyColors}
                 />
               )}
             </>

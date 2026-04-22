@@ -1,5 +1,4 @@
 const { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage } = require('electron');
-const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const store = require('electron-store');
 
@@ -9,6 +8,7 @@ if (process.platform === 'win32') app.setAppUserModelId('com.v1niii.nebula');
 const { AuthService } = require('./auth-service');
 const { AuthLaunchService, KEY_PATTERNS, EXCLUDE_KEY_PATTERNS, ADDITIVE_CATEGORIES } = require('./auth-launch-service');
 const gameService = require('./game-service');
+const deceive = require('./deceive-manager');
 
 const appStore = new store({ clearInvalidConfig: true });
 const authService = new AuthService(appStore);
@@ -36,7 +36,8 @@ function createWindow() {
     mainWindow.setMenu(null);
     mainWindow.show();
 
-    if (process.env.NODE_ENV === 'development') {
+    const devMode = !app.isPackaged && process.argv.includes('--dev');
+    if (devMode) {
         mainWindow.loadURL('http://localhost:5173');
     } else {
         mainWindow.loadFile(path.join(__dirname, 'renderer/dist/index.html'));
@@ -102,6 +103,9 @@ function launchFromTray(accountId) {
 }
 
 function setupAutoUpdater() {
+    // Lazy-require so the lazy `autoUpdater` getter (which touches
+    // app.getVersion) doesn't fire in dev mode when this function is skipped.
+    const { autoUpdater } = require('electron-updater');
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.allowPrerelease = false;
@@ -148,6 +152,7 @@ function setupAutoUpdater() {
 }
 
 ipcMain.handle('install-update-now', () => {
+    const { autoUpdater } = require('electron-updater');
     autoUpdater.quitAndInstall();
 });
 
@@ -169,7 +174,11 @@ if (!gotTheLock) {
     app.whenReady().then(() => {
         createWindow();
         createTray();
-        if (process.env.NODE_ENV !== 'development') setupAutoUpdater();
+        if (app.isPackaged) setupAutoUpdater();
+
+        // Appear-offline is now handled by bundled Deceive.exe (see
+        // deceive-manager.js). The config+XMPP proxy modules under
+        // appear-offline/ are retained for reference but not started.
 
         // Load the persisted name cache for the Match Info "yoinker" fallback.
         // Stored in userData so it survives across Nebula restarts and grows
@@ -196,7 +205,7 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') { /* tray keeps app alive */ }
 });
 
-app.on('before-quit', () => { app.isQuitting = true; });
+app.on('before-quit', () => { app.isQuitting = true; deceive.kill(); });
 
 // No longer need to scrub YAML on quit - snapshot/restore handles auth state
 
@@ -301,7 +310,15 @@ async function performLaunch(accountId) {
         }
 
         const autoLaunch = appStore.get('autoLaunchValorant', true);
-        const result = await authLaunchService.launchValorant(account, autoLaunch);
+        // When Appear Offline is on AND Deceive is installed, spawn Deceive
+        // instead of Riot Client directly — it sets up its own proxy and
+        // launches the Riot Client through it. Otherwise do a normal launch.
+        const wantsAppearOffline = !!appStore.get('appearOffline', false);
+        const deceiveReady = wantsAppearOffline ? await deceive.isInstalled() : false;
+        // Kill any leftover Deceive from a previous account before launching.
+        deceive.kill();
+        const launchOpts = { useDeceive: deceiveReady };
+        const result = await authLaunchService.launchValorant(account, autoLaunch, [], launchOpts);
 
         if (result.sessionExpired) {
             if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'error', 'Session expired');
@@ -327,6 +344,9 @@ async function performLaunch(accountId) {
         return { success: true };
     } catch (error) {
         releaseLaunchLock();
+        // If launchValorant threw after spawning Deceive, kill it so it
+        // doesn't linger with no game to wrap.
+        deceive.kill();
         if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'error', error.message);
         return { success: false, error: error.message };
     }
@@ -451,6 +471,49 @@ ipcMain.handle('copy-cloud-settings', async (event, fromId, toId, categories) =>
     } catch (error) {
         console.error('[copy] failed:', error.message);
         return { success: false, error: error.message };
+    }
+});
+
+// --- Appear Offline IPC ---
+// Backed by bundled Deceive.exe (see deceive-manager.js). Global boolean:
+// when ON, the next Valorant launch via Nebula spawns Deceive instead of
+// the Riot Client directly. Doesn't affect already-running sessions.
+
+// One-time migration: wipe the stale per-puuid set from the previous
+// in-house MITM attempt.
+if (appStore.has('appearOfflinePuuids')) {
+    appStore.delete('appearOfflinePuuids');
+}
+
+ipcMain.handle('get-presence-state', async () => {
+    return { success: true, isOffline: !!appStore.get('appearOffline', false) };
+});
+
+ipcMain.handle('set-appear-offline', async (event, offline) => {
+    const next = !!offline;
+    appStore.set('appearOffline', next);
+    return { success: true, isOffline: next, requiresRelaunch: true };
+});
+
+// Deceive bundle management — fetches the latest Deceive.exe release from
+// GitHub and saves it to the user's data folder. Used when Appear Offline
+// is enabled but Deceive isn't yet installed.
+ipcMain.handle('get-deceive-status', async () => {
+    try {
+        const installed = await deceive.isInstalled();
+        return { success: true, installed, path: deceive.exePath() };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('install-deceive', async () => {
+    try {
+        const result = await deceive.install();
+        return { success: true, ...result };
+    } catch (e) {
+        console.log(`[deceive] install failed: ${e.message}`);
+        return { success: false, error: e.message };
     }
 });
 
@@ -609,8 +672,7 @@ ipcMain.handle('get-match-info', async (event, accountId) => {
     try {
         const ctx = await resolveLiveAuthTokens(accountId);
         const henrikdevApiKey = appStore.get('henrikdevApiKey', '');
-        const partyMap = await authLaunchService.fetchPartyMap();
-        const info = await gameService.getMatchInfo(ctx, { henrikdevApiKey, partyMap });
+        const info = await gameService.getMatchInfo(ctx, { henrikdevApiKey });
         return { success: true, match: info };
     } catch (e) {
         return { success: false, error: e.message };
@@ -814,6 +876,7 @@ function startValorantWatcher(accountId) {
                 queueSnapshot(accountId);
                 sendStatus(accountId, 'closed');
                 stopValorantWatcher();
+                deceive.kill();
             } else if (!valorantFound && !apiTried && checks >= WATCHER_API_LAUNCH_CHECK) {
                 apiTried = true;
                 authLaunchService.tryApiLaunch().catch(() => {});
@@ -821,9 +884,10 @@ function startValorantWatcher(accountId) {
                 releaseLaunchLock();
                 sendStatus(accountId, 'closed');
                 stopValorantWatcher();
+                deceive.kill();
             }
         } catch {
-            if (checks > 10) { releaseLaunchLock(); sendStatus(accountId, 'closed'); stopValorantWatcher(); }
+            if (checks > 10) { releaseLaunchLock(); sendStatus(accountId, 'closed'); stopValorantWatcher(); deceive.kill(); }
         }
     }, WATCHER_TICK_MS);
 }

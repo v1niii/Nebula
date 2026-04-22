@@ -168,37 +168,6 @@ class AuthLaunchService {
         return fetch(`https://127.0.0.1:${lockfile.port}${endpoint}`, opts);
     }
 
-    // Party detection via the local chat/presences endpoint.
-    //
-    // Match endpoints (pregame/coregame) strip party data from the payload, so
-    // the only way to group players by party is via the Riot client's local
-    // XMPP presence list. While the user is in pregame/in-match, this endpoint
-    // expands to include all 10 lobby players. Each entry has a base64-encoded
-    // `private` blob containing that player's `partyId`.
-    //
-    // Returns a plain object: { puuid: partyId }. Returns {} on any error — a
-    // missing party map should never break match-info rendering.
-    async fetchPartyMap() {
-        try {
-            const res = await this._localApi('GET', '/chat/v4/presences');
-            if (!res || !res.ok) return {};
-            const data = await res.json();
-            const presences = data?.presences || [];
-            const map = {};
-            for (const pr of presences) {
-                if (pr.product !== 'valorant' || !pr.puuid || !pr.private) continue;
-                try {
-                    const decoded = JSON.parse(Buffer.from(pr.private, 'base64').toString('utf-8'));
-                    const partyId = decoded?.partyId || decoded?.matchPresenceData?.partyId;
-                    if (partyId) map[pr.puuid] = partyId;
-                } catch { /* skip unparseable entry */ }
-            }
-            return map;
-        } catch {
-            return {};
-        }
-    }
-
     async getAuthenticatedAccount() {
         // Primary: entitlements endpoint (full token + PUUID in one call)
         try {
@@ -297,7 +266,7 @@ class AuthLaunchService {
     // --- Launch Valorant ---
 
     // Returns { sessionExpired: true } if user needs to re-login
-    async launchValorant(account, autoLaunchValorant = true) {
+    async launchValorant(account, autoLaunchValorant = true, extraArgs = [], options = {}) {
         if (!account?.id) throw new Error('Invalid account.');
         const hasSnap = await this.hasSnapshot(account.id);
         if (!hasSnap) throw new Error('No saved session. Remove and re-add the account.');
@@ -312,9 +281,20 @@ class AuthLaunchService {
         for (const f of ['Config/lockfile', 'Config/lockfile_']) await fs.unlink(path.join(riotDir, f)).catch(() => {});
         for (const lf of [RIOT_CLIENT_LOCKFILE, RIOT_CLIENT_BETA_LOCKFILE]) await fs.unlink(path.join(RIOT_CLIENT_DATA_PATH_BASE, lf)).catch(() => {});
 
-        const exePath = await this.getRiotClientPath();
-        const args = autoLaunchValorant ? ['--launch-product=valorant', '--launch-patchline=live'] : [];
-        spawn(exePath, args, { detached: true, stdio: 'ignore', cwd: path.dirname(exePath) }).unref();
+        // When launching via Deceive, spawn it instead of the Riot Client
+        // directly — Deceive wraps the Riot Client with its own proxies for
+        // appear-offline support. The binary is installed as DeceiveVAL.exe
+        // so Deceive auto-selects Valorant from its executable name.
+        if (options.useDeceive) {
+            const deceive = require('./deceive-manager');
+            const deceivePath = deceive.exePath();
+            spawn(deceivePath, [], { detached: true, stdio: 'ignore', cwd: path.dirname(deceivePath) }).unref();
+        } else {
+            const exePath = await this.getRiotClientPath();
+            const baseArgs = autoLaunchValorant ? ['--launch-product=valorant', '--launch-patchline=live'] : [];
+            const args = [...baseArgs, ...(extraArgs || [])];
+            spawn(exePath, args, { detached: true, stdio: 'ignore', cwd: path.dirname(exePath) }).unref();
+        }
 
         // Wait up to 20s for the local Riot Client API to come up authed.
         // 10s was too tight on cold starts / AV scanning / slow disks → false expired.
@@ -349,6 +329,10 @@ class AuthLaunchService {
         // __cf_bm) plus tdid, which we inject from rso-authenticator.tdid if
         // it isn't already in the cookies array.
         console.log('Session truly expired. Reopening login page...');
+        // Kill any Deceive we may have spawned — re-login uses the Riot
+        // Client directly, and we don't want Deceive hanging around with
+        // no game to wrap.
+        try { require('./deceive-manager').kill(); } catch {}
         await this.closeRiotProcesses();
         await new Promise(r => setTimeout(r, 2000));
 
@@ -361,7 +345,12 @@ class AuthLaunchService {
         } catch {}
         for (const f of ['Config/lockfile', 'Config/lockfile_']) await fs.unlink(path.join(riotDir, f)).catch(() => {});
 
-        spawn(exePath, [], { detached: true, stdio: 'ignore', cwd: path.dirname(exePath) }).unref();
+        // Re-login always uses the Riot Client directly (not Deceive) — the
+        // user needs to enter credentials and handle MFA, which has to hit
+        // Riot's real auth endpoints untouched. Deceive kicks back in on
+        // the next launch after they've re-authed.
+        const riotClientPath = await this.getRiotClientPath();
+        spawn(riotClientPath, [], { detached: true, stdio: 'ignore', cwd: path.dirname(riotClientPath) }).unref();
         return { sessionExpired: true };
     }
 

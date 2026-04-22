@@ -1136,7 +1136,6 @@ async function getMatchInfo({ accessToken, entitlementsToken, region, puuid }, o
             accountLevel: level,
             card: cardMeta ? { id: cardId, wide: cardMeta.wide, large: cardMeta.large } : null,
             isSmurf,
-            partyId: (options.partyMap && options.partyMap[p.Subject]) || null,
         };
     };
 
@@ -1172,6 +1171,7 @@ async function getMatchInfo({ accessToken, entitlementsToken, region, puuid }, o
         ally: allyWithoutSelf.map(buildPlayer),
         enemy: rawEnemyPlayers.map(buildPlayer),
     };
+
 
     console.log(`[game] resolution summary: name-service=${resolvedNS}, cache=${resolvedCache}, hidden=${totalHidden}, cache size=${nameCache.size}`);
     return result;

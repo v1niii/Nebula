@@ -377,7 +377,7 @@ function RankCard({ label, icon: Icon, rank, showAct = false, showRR = false }) 
         <p className="text-[10px] text-purple-400 uppercase tracking-wider font-semibold">{label}</p>
       </div>
       {rank ? (
-        <div className="flex items-center gap-2">
+        <div className="flex items-start gap-2">
           {rank.icon && <img src={rank.icon} alt={rank.name} className="h-10 w-10 shrink-0" />}
           <div className="min-w-0 flex-1">
             <p className="text-sm font-bold truncate leading-tight text-foreground">{rank.name}</p>

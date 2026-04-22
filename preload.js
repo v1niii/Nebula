@@ -16,6 +16,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     getSettings: () => ipcRenderer.invoke('get-settings'),
     saveSettings: (s) => ipcRenderer.invoke('save-settings', s),
+    getPresenceState: () => ipcRenderer.invoke('get-presence-state'),
+    setAppearOffline: (offline) => ipcRenderer.invoke('set-appear-offline', offline),
+    getDeceiveStatus: () => ipcRenderer.invoke('get-deceive-status'),
+    installDeceive: () => ipcRenderer.invoke('install-deceive'),
     getStore: (id) => ipcRenderer.invoke('get-store', id),
     getMatchInfo: (id) => ipcRenderer.invoke('get-match-info', id),
     getAccountRank: (id) => ipcRenderer.invoke('get-account-rank', id),
