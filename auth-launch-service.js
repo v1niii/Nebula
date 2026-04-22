@@ -168,6 +168,34 @@ class AuthLaunchService {
         return fetch(`https://127.0.0.1:${lockfile.port}${endpoint}`, opts);
     }
 
+    // Build a { puuid: partyId } map from the Riot Client's current chat
+    // roster. Each presence has a base64-encoded `private` blob; decoded
+    // JSON exposes `partyId`. The roster covers self + party members +
+    // online friends — i.e. whoever is visible to the user's chat session.
+    // Returns {} if the Riot Client isn't reachable or the response is
+    // malformed — party detection is an enhancement, not a requirement.
+    async fetchPartyMap() {
+        try {
+            const res = await this._localApi('GET', '/chat/v4/presences');
+            if (!res || !res.ok) return {};
+            const data = await res.json();
+            const presences = data?.presences || [];
+            const map = {};
+            for (const pr of presences) {
+                const product = typeof pr.product === 'string' ? pr.product.toLowerCase() : '';
+                if (product !== 'valorant' || !pr.puuid || !pr.private) continue;
+                try {
+                    const decoded = JSON.parse(Buffer.from(pr.private, 'base64').toString('utf-8'));
+                    const partyId = decoded?.partyId || decoded?.matchPresenceData?.partyId;
+                    if (partyId) map[pr.puuid] = partyId;
+                } catch { /* skip unparseable entry */ }
+            }
+            return map;
+        } catch {
+            return {};
+        }
+    }
+
     async getAuthenticatedAccount() {
         // Primary: entitlements endpoint (full token + PUUID in one call)
         try {

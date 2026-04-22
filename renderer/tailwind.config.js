@@ -5,6 +5,17 @@ export default {
     './index.html',
     './src/**/*.{js,jsx}',
   ],
+  safelist: [
+    // Party-color left-border classes used dynamically from PARTY_PALETTE
+    // in MatchInfoTab. Safelisted so JIT includes them even though the
+    // classes are indexed into at runtime.
+    'border-l-4',
+    'border-l-fuchsia-500',
+    'border-l-cyan-400',
+    'border-l-amber-400',
+    'border-l-rose-400',
+    'border-l-teal-400',
+  ],
   theme: {
     extend: {
       fontFamily: {
