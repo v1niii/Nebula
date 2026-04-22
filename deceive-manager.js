@@ -34,6 +34,20 @@ class DeceiveManager {
         return path.join(app.getPath('userData'), 'deceive', 'DeceiveVAL.exe');
     }
 
+    _versionFile() {
+        return path.join(path.dirname(this.exePath()), '.version');
+    }
+
+    async getInstalledVersion() {
+        try {
+            return (await fs.readFile(this._versionFile(), 'utf-8')).trim() || null;
+        } catch { return null; }
+    }
+
+    async _writeInstalledVersion(tag) {
+        try { await fs.writeFile(this._versionFile(), String(tag || ''), 'utf-8'); } catch { /* non-fatal */ }
+    }
+
     async isInstalled() {
         // Migrate from the old location (Deceive.exe) to the new one
         // (DeceiveVAL.exe) if a previous install left it around.
@@ -105,8 +119,39 @@ class DeceiveManager {
         if (!asset) throw new Error('no Deceive.exe found in latest release');
         console.log(`[deceive] downloading ${release.tag_name} → ${this.exePath()}`);
         await this._downloadFollowingRedirects(asset.browser_download_url, this.exePath());
+        await this._writeInstalledVersion(release.tag_name);
         console.log('[deceive] install complete');
         return { version: release.tag_name };
+    }
+
+    // Silent background update check. Called on app startup (only if the
+    // user has Appear Offline enabled). Skips if Deceive isn't installed,
+    // isn't running is required for the file replace, or the GitHub API
+    // is unreachable / rate-limited. Returns the new version if updated,
+    // null if already up-to-date, or throws on unexpected failure.
+    async checkForUpdate() {
+        if (this.isRunning()) return null; // can't replace a running exe
+        if (!(await this.isInstalled())) return null;
+        let release;
+        try {
+            release = await this._httpsJson(`https://api.github.com/repos/${DECEIVE_REPO}/releases/latest`);
+        } catch (e) {
+            console.log(`[deceive] update check skipped: ${e.message}`);
+            return null;
+        }
+        const latest = release?.tag_name;
+        if (!latest) return null;
+        const current = await this.getInstalledVersion();
+        if (current === latest) {
+            console.log(`[deceive] already on latest (${latest})`);
+            return null;
+        }
+        const asset = (release?.assets || []).find(a => a.name === 'Deceive.exe');
+        if (!asset) return null;
+        console.log(`[deceive] updating ${current || 'unknown'} → ${latest}`);
+        await this._downloadFollowingRedirects(asset.browser_download_url, this.exePath());
+        await this._writeInstalledVersion(latest);
+        return { from: current, to: latest };
     }
 
     // Launch Deceive (installed as DeceiveVAL.exe). Deceive reads its own

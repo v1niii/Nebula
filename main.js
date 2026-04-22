@@ -177,8 +177,16 @@ if (!gotTheLock) {
         if (app.isPackaged) setupAutoUpdater();
 
         // Appear-offline is now handled by bundled Deceive.exe (see
-        // deceive-manager.js). The config+XMPP proxy modules under
-        // appear-offline/ are retained for reference but not started.
+        // deceive-manager.js). Silently check for a Deceive update on
+        // startup — only when the user actually has the feature turned on,
+        // so we don't hit GitHub for users who never use Appear Offline.
+        if (appStore.get('appearOffline', false)) {
+            setTimeout(() => {
+                deceive.checkForUpdate()
+                    .then(r => { if (r?.to) console.log(`[deceive] updated ${r.from || 'unknown'} → ${r.to}`); })
+                    .catch(e => console.log(`[deceive] update failed: ${e.message}`));
+            }, 3000);
+        }
 
         // Load the persisted name cache for the Match Info "yoinker" fallback.
         // Stored in userData so it survives across Nebula restarts and grows
