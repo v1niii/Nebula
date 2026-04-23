@@ -40,6 +40,9 @@ Thumbs.db
 !.vscode/extensions.json
 *.sublime-workspace
 
+# Claude Code local session state
+.claude/
+
 # Optional User Files
 .env
 .env.local
