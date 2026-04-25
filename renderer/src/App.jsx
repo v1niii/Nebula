@@ -158,12 +158,17 @@ function AppContent() {
   }, [accounts, statuses])
 
   // When auto-refresh is enabled and the user is viewing the accounts tab,
-  // silently refresh rank / RR / session stats every 15s.
+  // silently refresh rank / RR / session stats every 15s. Pause while
+  // Valorant is actually running — rank doesn't change mid-match, and
+  // background polling can contribute to in-game stutter on tight
+  // network/CPU budgets.
   useEffect(() => {
     if (!autoRefresh || activeTab !== 'accounts') return
+    const anyRunning = Object.values(statuses).some(s => s?.status === 'running')
+    if (anyRunning) return
     const id = setInterval(refreshAccountRanks, 15_000)
     return () => clearInterval(id)
-  }, [autoRefresh, activeTab, refreshAccountRanks])
+  }, [autoRefresh, activeTab, refreshAccountRanks, statuses])
 
   return (
     <div className="h-screen overflow-hidden p-4 flex flex-col">

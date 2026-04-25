@@ -268,12 +268,15 @@ export function MatchInfoTab({ accounts, autoRefresh, statuses = {} }) {
   }, [selectedId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-refresh interval — runs silently (no loading spinner, no error
-  // toasts) so the UI stays calm during background refreshes.
+  // toasts) so the UI stays calm during background refreshes. Pauses
+  // once a match is in INGAME phase: composition is locked at that point
+  // and continued polling just adds network noise during gameplay.
   useEffect(() => {
     if (!autoRefresh || !selectedId) return
+    if (match?.inMatch && match?.phase === 'INGAME') return
     const id = setInterval(() => fetchMatch(true), AUTO_REFRESH_MS)
     return () => clearInterval(id)
-  }, [autoRefresh, selectedId, fetchMatch])
+  }, [autoRefresh, selectedId, fetchMatch, match])
 
   // Pre-compute the blacklist-hit set for the current match — used by the
   // warning banner, the row highlighter, and the toast below. Includes the

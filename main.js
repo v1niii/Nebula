@@ -282,8 +282,20 @@ ipcMain.handle('check-session', async (event, accountId) => {
     return result;
 });
 
+// Launch lock with staleness detection. Without the staleness check, any
+// code path that fails to call `releaseLaunchLock()` (e.g. an unresolved
+// Promise during re-login) traps the user — they can't launch anything
+// until they restart Nebula. Auto-clearing after 6 minutes lets them
+// recover without a restart, while still preventing concurrent launches
+// in the normal case.
 let launchInProgress = false;
-function releaseLaunchLock() { launchInProgress = false; }
+let launchLockAcquiredAt = 0;
+const LAUNCH_LOCK_MAX_AGE_MS = 6 * 60 * 1000;
+function acquireLaunchLock() { launchInProgress = true; launchLockAcquiredAt = Date.now(); }
+function releaseLaunchLock() { launchInProgress = false; launchLockAcquiredAt = 0; }
+function isLaunchLockStale() {
+    return launchInProgress && launchLockAcquiredAt > 0 && (Date.now() - launchLockAcquiredAt) > LAUNCH_LOCK_MAX_AGE_MS;
+}
 
 // Serializes all snapshot operations so they never run concurrently with a launch's restore.
 // Without this, a launch's restoreAccountData can overwrite the disk while a watcher's snapshot
@@ -298,8 +310,16 @@ function queueSnapshot(accountId) {
 // handler (from the main window) and the tray quick-launch menu. Returns the
 // same shape so both callers can react consistently.
 async function performLaunch(accountId) {
-    if (launchInProgress) return { success: false, error: 'A launch is already in progress. Please wait.' };
-    launchInProgress = true;
+    if (launchInProgress) {
+        if (!isLaunchLockStale()) {
+            return { success: false, error: 'A launch is already in progress. Please wait.' };
+        }
+        // Lock has been held for 6+ minutes — almost certainly stuck.
+        // Force-release so the user can recover without restarting Nebula.
+        console.warn('[main] launch lock was stale, force-releasing');
+        releaseLaunchLock();
+    }
+    acquireLaunchLock();
     // Stop the previous watcher and wait for any in-flight snapshot to complete BEFORE
     // we start overwriting the Riot Client directory with the new account's data.
     // Also reset the previously-watched account's UI state so it doesn't stay stuck on "Running".
@@ -330,12 +350,27 @@ async function performLaunch(accountId) {
 
         if (result.sessionExpired) {
             if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'error', 'Session expired');
+            // Failsafe: handleReLogin has its own 5-minute internal timeout,
+            // but if the Promise never resolves (process hang, user closes
+            // Riot Client mid-flow, etc.) the launch lock would stay held
+            // forever. Always release after 6 minutes, no exceptions.
+            let lockReleased = false;
+            const releaseOnce = () => { if (!lockReleased) { lockReleased = true; releaseLaunchLock(); } };
+            const failsafeTimer = setTimeout(() => {
+                if (!lockReleased) {
+                    console.warn('[main] re-login failsafe timeout — releasing launch lock');
+                    releaseOnce();
+                    if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'idle');
+                }
+            }, 6 * 60 * 1000);
             authLaunchService.handleReLogin(accountId).then(() => {
+                clearTimeout(failsafeTimer);
                 authService.updateLastUsed(accountId);
-                releaseLaunchLock();
+                releaseOnce();
                 if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'idle');
             }).catch((e) => {
-                releaseLaunchLock();
+                clearTimeout(failsafeTimer);
+                releaseOnce();
                 if (mainWindow) mainWindow.webContents.send('update-launch-status', accountId, 'idle');
                 console.warn('Re-login flow failed:', e?.message || e);
             });
@@ -860,20 +895,25 @@ function sendStatus(accountId, status, message) {
     }
 }
 
-// Poll every 3s for Valorant process + auth match. Timeout at 60 checks = 3 minutes:
-// cold boot + Vanguard init + AV scanning can easily push launch past 90s on slower machines.
-const WATCHER_TICK_MS = 3000;
-const WATCHER_MAX_CHECKS = 60; // 3 minutes
+// Polling cadence. PRELAUNCH is fast so the UI flips to "running" quickly
+// once Valorant is detected; INGAME is much slower because we only need
+// to notice the eventual close, and `tasklist` spawns at 3s while playing
+// add up (20+ subprocess spawns per minute → minor but unnecessary load).
+const WATCHER_TICK_MS_PRELAUNCH = 3000;
+const WATCHER_TICK_MS_INGAME = 10000;
+const WATCHER_MAX_CHECKS = 60; // 3 minutes at 3s = covers cold boot + Vanguard init + AV scan
 const WATCHER_API_LAUNCH_CHECK = 2; // ~6s before trying the local API fallback
 
 function startValorantWatcher(accountId) {
     stopValorantWatcher();
     watchedAccountId = accountId;
-    let valorantFound = false, checks = 0, apiTried = false;
-    valorantProcessWatcher = setInterval(async () => {
+    let valorantFound = false, checks = 0, apiTried = false, errorStreak = 0;
+
+    const tick = async () => {
         checks++;
         try {
             const valRunning = await authLaunchService.isValorantRunning();
+            errorStreak = 0;
 
             if (valRunning && !valorantFound) {
                 // Verify the running Riot Client is authed as THIS account
@@ -884,6 +924,10 @@ function startValorantWatcher(accountId) {
                 releaseLaunchLock();
                 queueSnapshot(accountId);
                 sendStatus(accountId, 'running');
+                // Slow down polling now that we're in-game — `tasklist` every
+                // 3s isn't free during a Valorant match.
+                if (valorantProcessWatcher) clearInterval(valorantProcessWatcher);
+                valorantProcessWatcher = setInterval(tick, WATCHER_TICK_MS_INGAME);
             } else if (!valRunning && valorantFound) {
                 queueSnapshot(accountId);
                 sendStatus(accountId, 'closed');
@@ -898,10 +942,21 @@ function startValorantWatcher(accountId) {
                 stopValorantWatcher();
                 deceive.kill();
             }
-        } catch {
-            if (checks > 10) { releaseLaunchLock(); sendStatus(accountId, 'closed'); stopValorantWatcher(); deceive.kill(); }
+        } catch (e) {
+            errorStreak++;
+            console.warn(`[watcher] tick error (#${errorStreak}): ${e?.message || e}`);
+            // Bail after 5 consecutive errors so a persistent failure doesn't
+            // leave the launch lock held while the watcher silently spins.
+            if (errorStreak >= 5 || checks > 10) {
+                releaseLaunchLock();
+                sendStatus(accountId, 'closed');
+                stopValorantWatcher();
+                deceive.kill();
+            }
         }
-    }, WATCHER_TICK_MS);
+    };
+
+    valorantProcessWatcher = setInterval(tick, WATCHER_TICK_MS_PRELAUNCH);
 }
 
 function stopValorantWatcher() {
