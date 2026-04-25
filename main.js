@@ -252,6 +252,7 @@ ipcMain.handle('remove-account', async (event, accountId) => {
         // Clear the in-memory region-verified flag so a re-import of the same
         // puuid runs the probe fresh instead of trusting a stale verdict.
         regionVerifiedThisSession.delete(accountId);
+        invalidateLiveAuthCache(accountId);
         rebuildTrayMenu();
         return { success: true };
     } catch (error) { return { success: false, error: error.message }; }
@@ -612,8 +613,26 @@ ipcMain.handle('save-settings', async (event, settings) => {
 // Self-heals the stored region via PAS once per session — fixes legacy
 // accounts that were saved with the LoL affinity before PAS detection
 // existed, without forcing the user to re-import.
+//
+// Tokens are cached per-account for ~50 minutes. Riot's RSO access tokens
+// last roughly 1 hour, so caching cuts auth-endpoint hits from once-per-
+// IPC to once-per-hour. Without this, the auto-refresh loop (every 15s)
+// would re-issue 240 access tokens per 15 minutes — that's enough to
+// trigger Riot's auth-endpoint rate limiter, which then fails subsequent
+// `getCloudAuthTokens` calls and silently breaks all live API features.
 const regionVerifiedThisSession = new Set();
+const liveAuthCache = new Map(); // accountId → { value, expiresAt }
+const LIVE_AUTH_TTL_MS = 50 * 60 * 1000;
+
+function invalidateLiveAuthCache(accountId) {
+    if (accountId) liveAuthCache.delete(accountId);
+    else liveAuthCache.clear();
+}
+
 async function resolveLiveAuthTokens(accountId) {
+    const cached = liveAuthCache.get(accountId);
+    if (cached && Date.now() < cached.expiresAt) return cached.value;
+
     const account = authService.getAccountById(accountId);
     if (!account) throw new Error('Account not found.');
     const stored = await authService.retrieveCookiesSecurely(accountId);
@@ -648,7 +667,9 @@ async function resolveLiveAuthTokens(accountId) {
         }
     }
 
-    return { accessToken, entitlementsToken, puuid: account.id, region };
+    const value = { accessToken, entitlementsToken, puuid: account.id, region };
+    liveAuthCache.set(accountId, { value, expiresAt: Date.now() + LIVE_AUTH_TTL_MS });
+    return value;
 }
 
 // Walk every stored account and ask PAS for the real Valorant region.
