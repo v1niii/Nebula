@@ -157,18 +157,15 @@ function AppContent() {
     } catch { /* silent */ }
   }, [accounts, statuses])
 
-  // When auto-refresh is enabled and the user is viewing the accounts tab,
-  // silently refresh rank / RR / session stats every 15s. Pause while
-  // Valorant is actually running — rank doesn't change mid-match, and
-  // background polling can contribute to in-game stutter on tight
-  // network/CPU budgets.
+  // When auto-refresh is enabled and the user is viewing the accounts
+  // tab, silently refresh the running account's rank/RR every 15s.
+  // `refreshAccountRanks` is already scoped to the running account, so
+  // this is at most one MMR call per tick.
   useEffect(() => {
     if (!autoRefresh || activeTab !== 'accounts') return
-    const anyRunning = Object.values(statuses).some(s => s?.status === 'running')
-    if (anyRunning) return
     const id = setInterval(refreshAccountRanks, 15_000)
     return () => clearInterval(id)
-  }, [autoRefresh, activeTab, refreshAccountRanks, statuses])
+  }, [autoRefresh, activeTab, refreshAccountRanks])
 
   return (
     <div className="h-screen overflow-hidden p-4 flex flex-col">
