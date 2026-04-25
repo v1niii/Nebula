@@ -740,6 +740,20 @@ ipcMain.handle('get-account-rank', async (event, accountId) => {
     }
 });
 
+// Returns the puuid of whichever account the local Riot Client is currently
+// authenticated as, or null if Riot Client isn't running. Used by the
+// renderer's auto-refresh to find an account to poll even when Valorant
+// was launched outside of Nebula (so `statuses[id].status === 'running'`
+// is never set by our launch tracker).
+ipcMain.handle('get-live-account', async () => {
+    try {
+        const info = await authLaunchService.getAuthenticatedAccount();
+        return { success: true, puuid: info?.puuid || null };
+    } catch {
+        return { success: true, puuid: null };
+    }
+});
+
 // Today's session stats: W/L, K/D, RR delta. Like rank badges, this is a
 // core account-management feature and is NOT gated behind the Match Info flag.
 ipcMain.handle('get-session-stats', async (event, accountId) => {

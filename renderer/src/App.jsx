@@ -145,15 +145,27 @@ function AppContent() {
     return () => { cancelled = true }
   }, [accounts]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Lightweight rank-only refresh for the running account. Only the
-  // account actively in-game can have its rank/RR change, so polling
-  // the others is wasted API budget. ~2 API calls per interval.
+  // Lightweight rank-only refresh for whichever account is currently
+  // playing. Only the active account's rank/RR can change, so polling
+  // the others is wasted API budget.
+  //
+  // Two-step lookup: first check Nebula's launch tracker (status ===
+  // 'running'), which is set when Valorant was launched via Nebula.
+  // If that's empty (user launched the game outside Nebula), fall back
+  // to asking the local Riot Client which account is currently authed
+  // — the answer is whoever owns the running Valorant session, if any.
   const refreshAccountRanks = useCallback(async () => {
-    const running = accounts.find(acc => statuses[acc.id]?.status === 'running')
-    if (!running) return
+    let target = accounts.find(acc => statuses[acc.id]?.status === 'running')
+    if (!target) {
+      try {
+        const live = await window.electronAPI.getLiveAccount()
+        if (live?.puuid) target = accounts.find(acc => acc.id === live.puuid)
+      } catch { /* silent */ }
+    }
+    if (!target) return
     try {
-      const r = await window.electronAPI.getAccountRank(running.id)
-      if (r.success && r.rank) setAccountRanks(prev => ({ ...prev, [running.id]: r.rank }))
+      const r = await window.electronAPI.getAccountRank(target.id)
+      if (r.success && r.rank) setAccountRanks(prev => ({ ...prev, [target.id]: r.rank }))
     } catch { /* silent */ }
   }, [accounts, statuses])
 

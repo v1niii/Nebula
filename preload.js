@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getStore: (id) => ipcRenderer.invoke('get-store', id),
     getMatchInfo: (id) => ipcRenderer.invoke('get-match-info', id),
     getAccountRank: (id) => ipcRenderer.invoke('get-account-rank', id),
+    getLiveAccount: () => ipcRenderer.invoke('get-live-account'),
     getSessionStats: (id) => ipcRenderer.invoke('get-session-stats', id),
     getPlayerStats: (viewerId, targetPuuid) => ipcRenderer.invoke('get-player-stats', viewerId, targetPuuid),
     getBlacklist: () => ipcRenderer.invoke('get-blacklist'),
