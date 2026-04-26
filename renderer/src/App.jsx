@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { ThemeProvider } from '@/hooks/useTheme.jsx'
 import { ToastProvider, useToast } from '@/components/ui/toast'
 import { useAccounts } from '@/hooks/useAccounts'
@@ -145,29 +145,40 @@ function AppContent() {
     return () => { cancelled = true }
   }, [accounts]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Lightweight rank-only refresh for whichever account is currently
-  // playing. Only the active account's rank/RR can change, so polling
-  // the others is wasted API budget.
-  //
-  // Two-step lookup: first check Nebula's launch tracker (status ===
-  // 'running'), which is set when Valorant was launched via Nebula.
-  // If that's empty (user launched the game outside Nebula), fall back
-  // to asking the local Riot Client which account is currently authed
-  // — the answer is whoever owns the running Valorant session, if any.
+  // Track last-seen RR per account so we can detect post-match changes
+  // and trigger a session-stats refresh (which is what backs the RR delta
+  // arrow + W/L counts on the card). Stored in a ref so updates don't
+  // trigger re-renders or recreate `refreshAccountRanks`.
+  const lastSeenRrRef = useRef({})
+
+  // Refresh all stored accounts in parallel. With the token cache in
+  // place (see resolveLiveAuthTokens), each account is just 2 cheap MMR
+  // calls — well under any rate limit even with several accounts.
+  // Refreshing all of them (rather than only the "running" one) means
+  // it works whether Valorant was launched via Nebula, externally, or
+  // not at all. When rank.rr changes for an account, that's a signal
+  // a match ended → trigger session stats refresh too so the RR delta
+  // arrow and W/L counts catch up.
   const refreshAccountRanks = useCallback(async () => {
-    let target = accounts.find(acc => statuses[acc.id]?.status === 'running')
-    if (!target) {
+    if (!accounts.length) return
+    await Promise.all(accounts.map(async (acc) => {
       try {
-        const live = await window.electronAPI.getLiveAccount()
-        if (live?.puuid) target = accounts.find(acc => acc.id === live.puuid)
+        const r = await window.electronAPI.getAccountRank(acc.id)
+        if (!r.success || !r.rank) return
+        setAccountRanks(prev => ({ ...prev, [acc.id]: r.rank }))
+        const newRr = r.rank?.current?.rr
+        const lastRr = lastSeenRrRef.current[acc.id]
+        if (newRr != null && lastRr != null && newRr !== lastRr) {
+          // RR moved — match likely just ended. Pull session stats so
+          // the RR-delta arrow and W/L counts on the card update too.
+          window.electronAPI.getSessionStats(acc.id).then(s => {
+            if (s.success && s.session) setAccountSessions(prev => ({ ...prev, [acc.id]: s.session }))
+          }).catch(() => {})
+        }
+        if (newRr != null) lastSeenRrRef.current[acc.id] = newRr
       } catch { /* silent */ }
-    }
-    if (!target) return
-    try {
-      const r = await window.electronAPI.getAccountRank(target.id)
-      if (r.success && r.rank) setAccountRanks(prev => ({ ...prev, [target.id]: r.rank }))
-    } catch { /* silent */ }
-  }, [accounts, statuses])
+    }))
+  }, [accounts])
 
   // When auto-refresh is enabled and the user is viewing the accounts
   // tab, silently refresh the running account's rank/RR every 15s.
